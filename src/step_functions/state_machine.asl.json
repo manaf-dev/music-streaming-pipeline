@@ -1,0 +1,150 @@
+{
+  "Comment": "Music streaming KPI pipeline: Validate -> Transform -> Ingest -> Archive. Triggered by S3 ObjectCreated under raw/streams/ via EventBridge. All four steps are idempotent so a failed execution is retried by re-uploading the file.",
+  "StartAt": "ValidateSchema",
+  "TimeoutSeconds": 1800,
+  "States": {
+    "ValidateSchema": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${validate_job_name}",
+        "Arguments": {
+          "--s3_key.$": "$.detail.object.key",
+          "--bucket.$": "$.detail.bucket.name",
+          "--execution_id.$": "$$.Execution.Name"
+        }
+      },
+      "ResultPath": "$.validate_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0,
+          "MaxDelaySeconds": 300,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "NotifyFailure"
+        }
+      ],
+      "Next": "TransformKPIs"
+    },
+    "TransformKPIs": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${transform_job_name}",
+        "Arguments": {
+          "--s3_key.$": "$.detail.object.key",
+          "--bucket.$": "$.detail.bucket.name",
+          "--execution_id.$": "$$.Execution.Name"
+        }
+      },
+      "ResultPath": "$.transform_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0,
+          "MaxDelaySeconds": 300,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "NotifyFailure"
+        }
+      ],
+      "Next": "IngestToDynamoDB"
+    },
+    "IngestToDynamoDB": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${ingest_job_name}",
+        "Arguments": {
+          "--bucket.$": "$.detail.bucket.name",
+          "--execution_id.$": "$$.Execution.Name",
+          "--table_name": "${table_name}"
+        }
+      },
+      "ResultPath": "$.ingest_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0,
+          "MaxDelaySeconds": 300,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "NotifyFailure"
+        }
+      ],
+      "Next": "ArchiveFiles"
+    },
+    "ArchiveFiles": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${archive_job_name}",
+        "Arguments": {
+          "--s3_key.$": "$.detail.object.key",
+          "--bucket.$": "$.detail.bucket.name",
+          "--execution_id.$": "$$.Execution.Name"
+        }
+      },
+      "ResultPath": "$.archive_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0,
+          "MaxDelaySeconds": 300,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "NotifyFailure"
+        }
+      ],
+      "Next": "PipelineSucceeded"
+    },
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${sns_topic_arn}",
+        "Subject.$": "States.Format('Music streaming pipeline FAILED ({})', $$.Execution.Name)",
+        "Message.$": "States.Format('Execution {} failed.\nBucket: {}\nKey: {}\nError: {}\nCause: {}', $$.Execution.Name, $.detail.bucket.name, $.detail.object.key, $.error.Error, $.error.Cause)"
+      },
+      "ResultPath": "$.notify_result",
+      "Next": "PipelineFailed"
+    },
+    "PipelineSucceeded": {
+      "Type": "Succeed"
+    },
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PipelineError",
+      "Cause": "See $.error for the failing step's details and the SNS alert for human-readable context."
+    }
+  }
+}
