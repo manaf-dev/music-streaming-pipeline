@@ -11,7 +11,7 @@ authors = [{ name = "Manaf Dev" }]
 # Glue 4.0 ships PySpark 3.3 / boto3 / awswrangler in its managed runtime, so these
 # pins exist for local unit testing and parity with the Glue runtime version.
 dependencies = [
-    "pyspark==3.3.*",
+    "pyspark>=3.5,<4",
     "boto3>=1.34,<2",
     "awswrangler>=3.7,<4",
     "pandas>=2.0,<3",
