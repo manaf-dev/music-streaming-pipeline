@@ -25,3 +25,15 @@ variable "project_name" {
   type        = string
   default     = "music-streaming-pipeline"
 }
+
+variable "tfstate_bucket_name" {
+  description = "S3 bucket holding remote state for the dev + prod envs. Leave null to default to <project>-tfstate-<account-id>."
+  type        = string
+  default     = null
+}
+
+variable "tfstate_noncurrent_version_retention_days" {
+  description = "Days to retain non-current Terraform state versions before lifecycle expires them."
+  type        = number
+  default     = 90
+}

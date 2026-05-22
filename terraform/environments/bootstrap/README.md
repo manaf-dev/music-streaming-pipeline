@@ -10,6 +10,9 @@ It creates:
   one by the `main` branch / `production` environment.
 - A permissions policy on each role broad enough to manage every resource
   the per-env Terraform configurations create.
+- The S3 bucket that the dev and prod environments use for Terraform remote
+  state (versioned, SSE-S3 encrypted, public-access-blocked, with a
+  90-day lifecycle on non-current versions).
 
 State is **local** here — there is no S3 backend yet, that's exactly what
 this run is bootstrapping. Commit `terraform.tfstate` to a secure store
@@ -30,8 +33,9 @@ After it succeeds, configure GitHub secrets / variables using the outputs:
 
 ```bash
 # Outputs to copy into GitHub repo settings
-terraform output dev_role_name   # -> AWS_ROLE_NAME_DEV (repo variable)
-terraform output prod_role_name  # -> AWS_ROLE_NAME_PROD (repo variable)
+terraform output dev_role_name        # -> AWS_ROLE_NAME_DEV   (repo variable)
+terraform output prod_role_name       # -> AWS_ROLE_NAME_PROD  (repo variable)
+terraform output tfstate_bucket_name  # -> TF_STATE_BUCKET     (repo variable)
 ```
 
 Account id (for the `AWS_ACCOUNT_ID` secret):

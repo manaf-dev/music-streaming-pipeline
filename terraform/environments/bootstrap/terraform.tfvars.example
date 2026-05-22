@@ -11,3 +11,8 @@ region = "eu-central-1"
 # (re-creating fails with EntityAlreadyExists). Run `aws iam list-open-id-connect-providers`
 # to check.
 create_oidc_provider = true
+
+# Optional: override the auto-generated tfstate bucket name. Default is
+# "<project>-tfstate-<account_id>". Bucket names are globally unique across all
+# of S3, so use something unlikely to collide if you customise.
+# tfstate_bucket_name = "music-streaming-tfstate-123456789012"

@@ -22,3 +22,13 @@ output "prod_role_name" {
   description = "Prod deploy role name — set AWS_ROLE_NAME_PROD to this value."
   value       = module.github_oidc.prod_role_name
 }
+
+output "tfstate_bucket_name" {
+  description = "Terraform state bucket name — set TF_STATE_BUCKET to this value."
+  value       = aws_s3_bucket.tfstate.bucket
+}
+
+output "tfstate_bucket_arn" {
+  description = "Terraform state bucket ARN."
+  value       = aws_s3_bucket.tfstate.arn
+}
