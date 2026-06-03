@@ -111,25 +111,15 @@ data "aws_iam_policy_document" "deploy_permissions" {
   statement {
     sid    = "S3"
     effect = "Allow"
-    actions = [
-      # Broad read: the AWS provider refreshes many bucket sub-resources
-      # (accelerate, acl, cors, logging, website, analytics, metrics, …) whose
-      # IAM action names are NOT all under the s3:GetBucket* prefix — e.g.
-      # s3:GetAccelerateConfiguration. Granting s3:Get*/s3:List* avoids
-      # whack-a-mole AccessDenied during plan/refresh.
-      "s3:Get*",
-      "s3:List*",
-      # Writes — scoped to the bucket + object operations Terraform performs.
-      "s3:CreateBucket",
-      "s3:DeleteBucket",
-      "s3:PutBucket*",
-      "s3:PutEncryptionConfiguration",
-      "s3:PutLifecycleConfiguration",
-      "s3:PutObject*",
-      "s3:DeleteObject*",
-      "s3:CopyObject",
-      "s3:AbortMultipartUpload",
-    ]
+    # This deploy role manages ALL S3 for the project — the Terraform state
+    # backend plus the data bucket and every bucket sub-resource the AWS
+    # provider reads/writes on plan and apply. Those sub-resource APIs use
+    # non-uniform IAM action names (s3:GetAccelerateConfiguration,
+    # s3:TagResource, s3:PutEncryptionConfiguration, …) that no single
+    # prefix wildcard covers, so a curated list causes repeated whack-a-mole
+    # AccessDenied failures. Grant s3:* — scoped to S3 only, which is the
+    # right altitude for an infrastructure deploy role.
+    actions   = ["s3:*"]
     resources = ["*"]
   }
 
