@@ -1,0 +1,130 @@
+name: CD (prod)
+
+on:
+  push:
+    branches: [main]
+
+# Serialise prod deploys; never cancel a running one.
+concurrency:
+  group: cd-prod
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  TERRAFORM_VERSION: "1.7.5"
+
+jobs:
+  test:
+    name: Test gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install JDK 17 (required by PySpark)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: ruff check
+        run: uv run ruff check src/ tests/
+
+      - name: mypy
+        run: uv run mypy src/
+
+      - name: pytest with coverage gate
+        run: uv run pytest tests/unit/ --cov=src --cov-fail-under=80
+
+  plan:
+    name: Plan (prod)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ vars.AWS_ROLE_NAME_PROD }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-cd-prod-plan-${{ github.run_id }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform init
+        working-directory: terraform/environments/prod
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: Terraform plan
+        working-directory: terraform/environments/prod
+        env:
+          TF_VAR_region: ${{ vars.AWS_REGION }}
+          TF_VAR_bucket_name: ${{ vars.S3_BUCKET_NAME_PROD }}
+          TF_VAR_sns_alert_email: ${{ secrets.SNS_ALERT_EMAIL }}
+        run: terraform plan -out=tfplan -input=false
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod
+          path: terraform/environments/prod/tfplan
+          if-no-files-found: error
+          retention-days: 7
+
+  apply:
+    name: Apply (prod, manual approval)
+    runs-on: ubuntu-latest
+    needs: plan
+    # GitHub `environment` rules supply the manual-approval gate:
+    # configure required reviewers under Settings > Environments > production.
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ vars.AWS_ROLE_NAME_PROD }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-cd-prod-apply-${{ github.run_id }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform init
+        working-directory: terraform/environments/prod
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod
+          path: terraform/environments/prod
+
+      - name: Terraform apply (saved plan)
+        working-directory: terraform/environments/prod
+        run: terraform apply -input=false tfplan
