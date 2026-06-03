@@ -90,7 +90,10 @@ def validate(*, bucket: str, s3_key: str, s3_client: Any | None = None) -> None:
 
     sample = df["listen_time"].head(_LISTEN_TIME_SAMPLE_SIZE)
     try:
-        pd.to_datetime(sample, errors="raise", format="ISO8601")
+        # Infer the format rather than forcing strict ISO8601: the canonical
+        # dataset uses a space separator ("2024-06-25 17:43:13"), which is valid
+        # ISO 8601 but rejected by pandas' strict format="ISO8601" parser.
+        pd.to_datetime(sample, errors="raise")
     except (ValueError, TypeError) as exc:
         log(
             logger,
