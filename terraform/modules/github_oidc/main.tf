@@ -138,6 +138,8 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "dynamodb:TagResource",
       "dynamodb:UntagResource",
       "dynamodb:ListTagsOfResource",
+      "dynamodb:Describe*",
+      "dynamodb:List*",
     ]
     resources = ["*"]
   }
@@ -164,6 +166,8 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "iam:TagRole",
       "iam:UntagRole",
       "iam:ListInstanceProfilesForRole",
+      "iam:Get*",
+      "iam:List*",
     ]
     resources = ["*"]
   }
@@ -188,6 +192,9 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "glue:GetTags",
       "glue:TagResource",
       "glue:UntagResource",
+      "glue:Get*",
+      "glue:List*",
+      "glue:BatchGet*",
     ]
     resources = ["*"]
   }
@@ -204,6 +211,8 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "states:ListTagsForResource",
       "states:TagResource",
       "states:UntagResource",
+      "states:Describe*",
+      "states:List*",
     ]
     resources = ["*"]
   }
@@ -224,6 +233,8 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "events:ListTagsForResource",
       "events:TagResource",
       "events:UntagResource",
+      "events:Describe*",
+      "events:List*",
     ]
     resources = ["*"]
   }
@@ -244,6 +255,8 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "sns:ListTagsForResource",
       "sns:TagResource",
       "sns:UntagResource",
+      "sns:Get*",
+      "sns:List*",
     ]
     resources = ["*"]
   }
@@ -260,6 +273,24 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "logs:ListTagsForResource",
       "logs:TagResource",
       "logs:UntagResource",
+      "logs:Describe*",
+      "logs:Get*",
+      "logs:List*",
+    ]
+    resources = ["*"]
+  }
+
+  # The AWS provider reads KMS key metadata when refreshing resources that
+  # reference a KMS key (e.g. SNS topic / log group / DynamoDB SSE). Read-only.
+  statement {
+    sid    = "KMSRead"
+    effect = "Allow"
+    actions = [
+      "kms:DescribeKey",
+      "kms:GetKeyPolicy",
+      "kms:GetKeyRotationStatus",
+      "kms:ListAliases",
+      "kms:ListResourceTags",
     ]
     resources = ["*"]
   }
