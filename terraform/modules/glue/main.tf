@@ -55,8 +55,29 @@ locals {
 # ---------------------------------------------------------------------------
 data "archive_file" "utils_zip" {
   type        = "zip"
-  source_dir  = var.utils_source_dir
   output_path = "${path.module}/utils.zip"
+
+  # Preserve the src/utils/ package path inside the zip so the Glue scripts'
+  # `import src.utils.X` resolves when the zip is on sys.path via
+  # --extra-py-files. Zipping the directory contents directly (source_dir)
+  # would put the modules at the archive root, breaking the `src.` prefix.
+  dynamic "source" {
+    for_each = toset([for f in fileset(var.utils_source_dir, "*.py") : f if f != "__init__.py"])
+    content {
+      content  = file("${var.utils_source_dir}/${source.value}")
+      filename = "src/utils/${source.value}"
+    }
+  }
+
+  # Package markers so `src` and `src.utils` are importable packages.
+  source {
+    content  = "# Namespace package for Glue --extra-py-files.\n"
+    filename = "src/__init__.py"
+  }
+  source {
+    content  = "# Namespace package for Glue --extra-py-files.\n"
+    filename = "src/utils/__init__.py"
+  }
 }
 
 resource "aws_s3_object" "utils_zip" {

@@ -132,7 +132,7 @@
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "${sns_topic_arn}",
-        "Subject.$": "States.Format('Music streaming pipeline FAILED ({})', $$.Execution.Name)",
+        "Subject": "Music streaming pipeline FAILED",
         "Message.$": "States.Format('Execution {} failed.\nBucket: {}\nKey: {}\nError: {}\nCause: {}', $$.Execution.Name, $.detail.bucket.name, $.detail.object.key, $.error.Error, $.error.Cause)"
       },
       "ResultPath": "$.notify_result",
