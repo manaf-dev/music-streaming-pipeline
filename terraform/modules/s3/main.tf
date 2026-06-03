@@ -116,7 +116,7 @@ resource "aws_s3_object" "songs_reference" {
   bucket       = aws_s3_bucket.main.id
   key          = "reference/songs/songs.csv"
   source       = "${var.data_dir}/songs/songs.csv"
-  etag         = filemd5("${var.data_dir}/songs/songs.csv")
+  source_hash  = filemd5("${var.data_dir}/songs/songs.csv")
   content_type = "text/csv"
 
   tags = local.common_tags
@@ -126,7 +126,7 @@ resource "aws_s3_object" "users_reference" {
   bucket       = aws_s3_bucket.main.id
   key          = "reference/users/users.csv"
   source       = "${var.data_dir}/users/users.csv"
-  etag         = filemd5("${var.data_dir}/users/users.csv")
+  source_hash  = filemd5("${var.data_dir}/users/users.csv")
   content_type = "text/csv"
 
   tags = local.common_tags

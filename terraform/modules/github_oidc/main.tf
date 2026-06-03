@@ -112,32 +112,23 @@ data "aws_iam_policy_document" "deploy_permissions" {
     sid    = "S3"
     effect = "Allow"
     actions = [
+      # Broad read: the AWS provider refreshes many bucket sub-resources
+      # (accelerate, acl, cors, logging, website, analytics, metrics, …) whose
+      # IAM action names are NOT all under the s3:GetBucket* prefix — e.g.
+      # s3:GetAccelerateConfiguration. Granting s3:Get*/s3:List* avoids
+      # whack-a-mole AccessDenied during plan/refresh.
+      "s3:Get*",
+      "s3:List*",
+      # Writes — scoped to the bucket + object operations Terraform performs.
       "s3:CreateBucket",
       "s3:DeleteBucket",
-      "s3:GetBucket*",
       "s3:PutBucket*",
-      "s3:DeleteBucket*",
-      "s3:GetObject*",
+      "s3:PutEncryptionConfiguration",
+      "s3:PutLifecycleConfiguration",
       "s3:PutObject*",
       "s3:DeleteObject*",
       "s3:CopyObject",
-      "s3:ListBucket*",
-      "s3:ListAllMyBuckets",
-      "s3:GetEncryptionConfiguration",
-      "s3:PutEncryptionConfiguration",
-      "s3:GetLifecycleConfiguration",
-      "s3:PutLifecycleConfiguration",
-      "s3:GetReplicationConfiguration",
-      "s3:GetBucketNotification",
-      "s3:PutBucketNotification",
-      "s3:GetBucketTagging",
-      "s3:PutBucketTagging",
-      "s3:GetBucketVersioning",
-      "s3:PutBucketVersioning",
-      "s3:GetBucketPublicAccessBlock",
-      "s3:PutBucketPublicAccessBlock",
       "s3:AbortMultipartUpload",
-      "s3:ListMultipartUploadParts",
     ]
     resources = ["*"]
   }
