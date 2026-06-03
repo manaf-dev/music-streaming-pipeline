@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/archive"
       version = ">= 2.4"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = ">= 0.9"
+    }
   }
 }
 
@@ -89,10 +93,33 @@ resource "aws_cloudwatch_log_group" "jobs" {
   tags              = local.common_tags
 }
 
+# ---------------------------------------------------------------------------
+# IAM role propagation buffer.
+# glue:CreateJob validates that the passed role is assumable by Glue. A role
+# created moments earlier may not have propagated yet, so a fresh `apply`
+# (e.g. a brand-new environment) can fail with InvalidInputException. This
+# sleep gates job creation on the role ARNs and adds a propagation buffer;
+# it re-triggers only when the role ARNs change.
+# ---------------------------------------------------------------------------
+resource "time_sleep" "role_propagation" {
+  create_duration = "30s"
+
+  triggers = {
+    role_arns = join(",", [
+      var.validate_role_arn,
+      var.transform_role_arn,
+      var.ingest_role_arn,
+      var.archive_role_arn,
+    ])
+  }
+}
+
 # ===========================================================================
 # Glue Python Shell — validate_schema
 # ===========================================================================
 resource "aws_glue_job" "validate" {
+  depends_on = [time_sleep.role_propagation]
+
   name         = local.job_names.validate
   role_arn     = var.validate_role_arn
   glue_version = "3.0"
@@ -123,6 +150,7 @@ resource "aws_glue_job" "validate" {
 # Glue ETL (PySpark) — transform_kpis
 # ===========================================================================
 resource "aws_glue_job" "transform" {
+  depends_on        = [time_sleep.role_propagation]
   name              = local.job_names.transform
   role_arn          = var.transform_role_arn
   glue_version      = "4.0"
@@ -162,6 +190,7 @@ resource "aws_glue_job" "transform" {
 # Glue Python Shell — ingest_to_dynamodb
 # ===========================================================================
 resource "aws_glue_job" "ingest" {
+  depends_on   = [time_sleep.role_propagation]
   name         = local.job_names.ingest
   role_arn     = var.ingest_role_arn
   glue_version = "3.0"
@@ -193,6 +222,7 @@ resource "aws_glue_job" "ingest" {
 # Glue Python Shell — archive_files
 # ===========================================================================
 resource "aws_glue_job" "archive" {
+  depends_on   = [time_sleep.role_propagation]
   name         = local.job_names.archive
   role_arn     = var.archive_role_arn
   glue_version = "3.0"
