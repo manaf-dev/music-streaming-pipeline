@@ -22,6 +22,34 @@ from typing import Any
 
 import pandas as pd
 
+
+def _ensure_src_importable() -> None:
+    """Make the shared ``src`` package importable under Glue Python Shell.
+
+    Glue Python Shell does not add a ``.zip`` passed via ``--extra-py-files``
+    to ``sys.path`` (unlike Glue Spark), so ``import src.utils`` fails there.
+    When it does, download the utils archive from S3 and prepend it to
+    ``sys.path``. A no-op for Spark jobs, local runs, and tests.
+    """
+    try:
+        import src.utils  # noqa: F401
+    except ModuleNotFoundError:  # pragma: no cover - Glue Python Shell only
+        import argparse
+        import tempfile
+
+        import boto3
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--bucket")
+        bucket = parser.parse_known_args(sys.argv[1:])[0].bucket
+        if bucket:
+            archive = os.path.join(tempfile.gettempdir(), "utils.zip")
+            boto3.client("s3").download_file(bucket, "glue-assets/utils.zip", archive)
+            sys.path.insert(0, archive)
+
+
+_ensure_src_importable()
+
 from src.utils.logger import get_logger, log
 from src.utils.s3_helpers import get_s3_client, read_csv_bytes
 from src.utils.schema_registry import REQUIRED_STREAM_COLUMNS
