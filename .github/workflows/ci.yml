@@ -13,7 +13,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  TERRAFORM_VERSION: "1.7.5"
+  TERRAFORM_VERSION: "1.14.9"
 
 jobs:
   lint:
