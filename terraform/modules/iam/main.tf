@@ -158,11 +158,15 @@ data "aws_iam_policy_document" "glue_transform" {
     resources = [var.bucket_arn]
   }
 
+  # Native Spark Parquet output also writes zero-byte "<dir>_$folder$" markers
+  # (e.g. the bucket-root key "processed_$folder$"), which do not match a
+  # "processed/*" pattern. Use the "processed*" prefix so both the data objects
+  # and the folder markers are writable.
   statement {
     sid       = "WriteProcessedKPIs"
     effect    = "Allow"
     actions   = ["s3:PutObject", "s3:DeleteObject", "s3:GetObject", "s3:AbortMultipartUpload"]
-    resources = ["${var.bucket_arn}/processed/*"]
+    resources = ["${var.bucket_arn}/processed*"]
   }
 
   statement {
@@ -183,7 +187,7 @@ data "aws_iam_policy_document" "glue_transform" {
       "s3:AbortMultipartUpload",
       "s3:ListMultipartUploadParts",
     ]
-    resources = ["${var.bucket_arn}/glue-temp/*"]
+    resources = ["${var.bucket_arn}/glue-temp*"]
   }
 }
 
