@@ -1,13 +1,16 @@
-"""Glue Python Shell — load KPI Parquet datasets into the single DynamoDB table.
+"""Glue Python Shell — merge per-file KPI partials into the daily DynamoDB KPIs.
 
-Reads three datasets from ``s3://<bucket>/processed/``:
+Reads two partial datasets written by the transform under an execution-scoped
+prefix ``s3://<bucket>/processed/<execution_id>/`` (execution-scoped so that
+concurrent same-day files never overwrite each other's handoff):
 
-* ``genre_kpis/``  -> ``pk = GENRE_KPI#<genre>#<date>``, ``sk = METADATA``
-* ``top_songs/``   -> ``pk = TOP_SONGS#<genre>#<date>``, ``sk = RANK#<nn>``
-* ``top_genres/``  -> ``pk = TOP_GENRES#<date>``,         ``sk = RANK#<nn>``
+* ``genre_partials/`` -> per (genre, day): listen_count, total_listening_time_ms, user_ids[]
+* ``song_partials/``  -> per (genre, day, track): play_count
 
-Items are sanitised (float -> Decimal) and batch-written with
-``overwrite_by_pkeys=["pk", "sk"]`` so re-runs replace existing rows in place.
+Each execution records its contribution as overwrite-keyed partial items, then
+the served daily KPIs are recomputed from *all* partials for the affected days.
+This is idempotent (re-running an execution overwrites identical partials) and
+correct across multiple files per day (sum of counters, union of user sets).
 """
 
 from __future__ import annotations
@@ -44,7 +47,13 @@ def _ensure_src_importable() -> None:
 
 _ensure_src_importable()
 
-from src.utils.dynamodb_helpers import batch_write_items
+from src.utils.dynamodb_helpers import (
+    put_genre_partial,
+    put_song_partials,
+    recompute_genre_kpi,
+    recompute_top_genres,
+    recompute_top_songs,
+)
 from src.utils.logger import get_logger, log
 
 _JOB_NAME = "ingest_to_dynamodb"
@@ -58,103 +67,98 @@ def _format_date(value: Any) -> str:
     return str(value)
 
 
-def build_genre_kpi_item(row: dict[str, Any]) -> dict[str, Any]:
-    """Build a single Genre-Level KPI DynamoDB item from a Parquet row."""
-    date = _format_date(row["listen_date"])
-    return {
-        "pk": f"GENRE_KPI#{row['track_genre']}#{date}",
-        "sk": "METADATA",
-        "genre": row["track_genre"],
-        "date": date,
-        "listen_count": int(row["listen_count"]),
-        "unique_listeners": int(row["unique_listeners"]),
-        "total_listening_time_ms": int(row["total_listening_time_ms"]),
-        "avg_listening_time_per_user_ms": float(row["avg_listening_time_per_user_ms"]),
-    }
+def _to_str_set(value: Any) -> set[str]:
+    """Coerce a parquet array cell (list / numpy array / scalar) to a set of str."""
+    if value is None:
+        return set()
+    if isinstance(value, str | bytes):
+        return {value.decode() if isinstance(value, bytes) else value}
+    try:
+        return {str(item) for item in value}
+    except TypeError:
+        return {str(value)}
 
 
-def build_top_songs_item(row: dict[str, Any]) -> dict[str, Any]:
-    """Build a single Top Songs DynamoDB item (one row per rank slot)."""
-    date = _format_date(row["listen_date"])
-    return {
-        "pk": f"TOP_SONGS#{row['track_genre']}#{date}",
-        "sk": f"RANK#{int(row['rank']):02d}",
-        "rank": int(row["rank"]),
-        "track_id": row["track_id"],
-        "track_name": row["track_name"],
-        "artists": row["artists"],
-        "play_count": int(row["play_count"]),
-    }
-
-
-def build_top_genres_item(row: dict[str, Any]) -> dict[str, Any]:
-    """Build a single Top Genres DynamoDB item (one row per rank slot)."""
-    date = _format_date(row["listen_date"])
-    return {
-        "pk": f"TOP_GENRES#{date}",
-        "sk": f"RANK#{int(row['rank']):02d}",
-        "rank": int(row["rank"]),
-        "genre": row["track_genre"],
-        "listen_count": int(row["listen_count"]),
-    }
-
-
-def ingest_dataframes(
-    *,
-    table: Any,
-    genre_kpis: Any,
-    top_songs: Any,
-    top_genres: Any,
+def merge_partials(
+    table: Any, genre_partials: Any, song_partials: Any, *, execution_id: str
 ) -> None:
-    """Build items from the three DataFrames and batch-write them to ``table``."""
+    """Write this execution's partials, then recompute affected daily KPIs.
+
+    ``genre_partials`` / ``song_partials`` are pandas DataFrames (parquet rows).
+    """
     logger = get_logger(_JOB_NAME)
 
-    items: list[dict[str, Any]] = []
-    for row in genre_kpis.to_dict(orient="records"):
-        items.append(build_genre_kpi_item(row))
-    for row in top_songs.to_dict(orient="records"):
-        items.append(build_top_songs_item(row))
-    for row in top_genres.to_dict(orient="records"):
-        items.append(build_top_genres_item(row))
+    affected_dates: set[str] = set()
+    affected_genre_dates: set[tuple[str, str]] = set()
+
+    genre_rows = genre_partials.to_dict(orient="records")
+    for row in genre_rows:
+        genre = str(row["track_genre"])
+        date = _format_date(row["listen_date"])
+        put_genre_partial(
+            table,
+            genre=genre,
+            date=date,
+            execution_id=execution_id,
+            listen_count=int(row["listen_count"]),
+            total_listening_time_ms=int(row["total_listening_time_ms"]),
+            user_ids=_to_str_set(row["user_ids"]),
+        )
+        affected_genre_dates.add((genre, date))
+        affected_dates.add(date)
+
+    song_rows = song_partials.to_dict(orient="records")
+    song_partial_items: list[dict[str, Any]] = []
+    for row in song_rows:
+        genre = str(row["track_genre"])
+        date = _format_date(row["listen_date"])
+        song_partial_items.append(
+            {
+                "genre": genre,
+                "date": date,
+                "execution_id": execution_id,
+                "track_id": str(row["track_id"]),
+                "track_name": str(row["track_name"]),
+                "artists": str(row["artists"]),
+                "play_count": int(row["play_count"]),
+            }
+        )
+        affected_genre_dates.add((genre, date))
+        affected_dates.add(date)
+    put_song_partials(table, song_partial_items)
+
+    for genre, date in affected_genre_dates:
+        recompute_genre_kpi(table, genre=genre, date=date)
+        recompute_top_songs(table, genre=genre, date=date)
+    for date in affected_dates:
+        recompute_top_genres(table, date=date)
 
     log(
         logger,
         "info",
-        "Built KPI items",
-        genre_kpis=len(genre_kpis),
-        top_songs=len(top_songs),
-        top_genres=len(top_genres),
-        total=len(items),
+        "Merge complete",
+        execution_id=execution_id,
+        genre_partials=len(genre_rows),
+        song_partials=len(song_rows),
+        days=len(affected_dates),
+        genre_days=len(affected_genre_dates),
     )
 
-    if not items:
-        log(logger, "warning", "Nothing to ingest (all three datasets are empty)")
-        return
 
-    batch_write_items(table, items, overwrite_by_pkeys=["pk", "sk"])
-    log(logger, "info", "Batch write complete", items_written=len(items))
-
-
-def ingest(*, bucket: str, table_name: str) -> None:  # pragma: no cover
-    """Read three Parquet datasets from S3 and ingest into ``table_name``."""
-    # Integration-tested in Phase 8 — unit tests use ingest_dataframes() directly.
+def ingest(*, bucket: str, table_name: str, execution_id: str) -> None:  # pragma: no cover
+    """Read the execution's partial Parquet datasets from S3 and merge them in."""
     import awswrangler as wr
     import boto3
 
     logger = get_logger(_JOB_NAME)
     log(logger, "info", "Starting ingest", bucket=bucket, table_name=table_name)
 
-    genre_kpis = wr.s3.read_parquet(path=f"s3://{bucket}/processed/genre_kpis/", dataset=True)
-    top_songs = wr.s3.read_parquet(path=f"s3://{bucket}/processed/top_songs/", dataset=True)
-    top_genres = wr.s3.read_parquet(path=f"s3://{bucket}/processed/top_genres/", dataset=True)
+    base = f"s3://{bucket}/processed/{execution_id}"
+    genre_partials = wr.s3.read_parquet(path=f"{base}/genre_partials/", dataset=True)
+    song_partials = wr.s3.read_parquet(path=f"{base}/song_partials/", dataset=True)
 
     table = boto3.resource("dynamodb").Table(table_name)
-    ingest_dataframes(
-        table=table,
-        genre_kpis=genre_kpis,
-        top_songs=top_songs,
-        top_genres=top_genres,
-    )
+    merge_partials(table, genre_partials, song_partials, execution_id=execution_id)
 
 
 def main() -> None:  # pragma: no cover
@@ -163,7 +167,7 @@ def main() -> None:  # pragma: no cover
 
     args = getResolvedOptions(sys.argv, ["bucket", "table_name", "execution_id"])
     os.environ["EXECUTION_ID"] = args["execution_id"]
-    ingest(bucket=args["bucket"], table_name=args["table_name"])
+    ingest(bucket=args["bucket"], table_name=args["table_name"], execution_id=args["execution_id"])
 
 
 if __name__ == "__main__":

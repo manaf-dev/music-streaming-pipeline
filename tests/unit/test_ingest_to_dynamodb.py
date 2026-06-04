@@ -1,8 +1,9 @@
-"""Unit tests for the DynamoDB ingest Glue job.
+"""Unit tests for the DynamoDB ingest job (partials + recompute merge).
 
-Targets the pure item-builder functions and the batch-write orchestration
-through ``ingest()``. The Glue entrypoint ``main()`` and the S3 Parquet read
-are exercised in Phase 8 integration tests.
+Drives ``merge_partials`` against a moto-mocked table and asserts that daily
+KPIs aggregate correctly across multiple files for the same day, that the
+unique-listener count is a true union, and that re-running an execution is
+idempotent. The Glue entrypoint ``main()`` and the S3 read are integration-tested.
 """
 
 from __future__ import annotations
@@ -16,14 +17,10 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from src.glue_jobs.ingest_to_dynamodb import (
-    build_genre_kpi_item,
-    build_top_genres_item,
-    build_top_songs_item,
-    ingest_dataframes,
-)
+from src.glue_jobs.ingest_to_dynamodb import merge_partials
 
 _TABLE = "test-kpi-table"
+_DAY = "2024-01-15"
 
 
 @pytest.fixture
@@ -45,243 +42,237 @@ def kpi_table(aws_credentials: None) -> Generator[boto3.resource, None, None]:
         yield resource.Table(_TABLE)
 
 
-# ---------------------------------------------------------------------------
-# Item builders
-# ---------------------------------------------------------------------------
-def test_build_genre_kpi_item_produces_correct_keys_and_attrs() -> None:
-    row = {
-        "track_genre": "pop",
-        "listen_date": pd.Timestamp("2024-01-15").date(),
-        "listen_count": 4521,
-        "unique_listeners": 312,
-        "total_listening_time_ms": 13_254_678,
-        "avg_listening_time_per_user_ms": 42467.56,
-    }
-    item = build_genre_kpi_item(row)
-    assert item["pk"] == "GENRE_KPI#pop#2024-01-15"
-    assert item["sk"] == "METADATA"
-    assert item["genre"] == "pop"
-    assert item["date"] == "2024-01-15"
-    assert item["listen_count"] == 4521
-    assert item["unique_listeners"] == 312
-    assert item["total_listening_time_ms"] == 13_254_678
-    assert item["avg_listening_time_per_user_ms"] == 42467.56
-
-
-def test_build_top_songs_item_produces_zero_padded_sk() -> None:
-    row = {
-        "track_genre": "pop",
-        "listen_date": pd.Timestamp("2024-01-15").date(),
-        "rank": 1,
-        "track_id": "t-001",
-        "track_name": "Song One",
-        "artists": "Artist A",
-        "play_count": 99,
-    }
-    item = build_top_songs_item(row)
-    assert item["pk"] == "TOP_SONGS#pop#2024-01-15"
-    assert item["sk"] == "RANK#01"  # zero-padded to two digits
-    assert item["rank"] == 1
-    assert item["track_id"] == "t-001"
-    assert item["track_name"] == "Song One"
-    assert item["artists"] == "Artist A"
-    assert item["play_count"] == 99
-
-
-def test_build_top_songs_item_pads_double_digit_rank() -> None:
-    row = {
-        "track_genre": "pop",
-        "listen_date": pd.Timestamp("2024-01-15").date(),
-        "rank": 10,
-        "track_id": "t-010",
-        "track_name": "Song Ten",
-        "artists": "Artist B",
-        "play_count": 5,
-    }
-    assert build_top_songs_item(row)["sk"] == "RANK#10"
-
-
-def test_build_top_genres_item_omits_genre_from_pk() -> None:
-    row = {
-        "listen_date": pd.Timestamp("2024-01-15").date(),
-        "rank": 2,
-        "track_genre": "rock",
-        "listen_count": 1200,
-    }
-    item = build_top_genres_item(row)
-    assert item["pk"] == "TOP_GENRES#2024-01-15"
-    assert item["sk"] == "RANK#02"
-    assert item["genre"] == "rock"
-    assert item["listen_count"] == 1200
-    assert item["rank"] == 2
-
-
-def test_no_float_attributes_after_sanitisation() -> None:
-    # avg_listening_time_per_user_ms is the only float field; ingest_dataframes
-    # routes items through sanitize_for_dynamodb before writing, which converts
-    # float -> Decimal. Verify directly via the helper used by the job.
-    from src.utils.dynamodb_helpers import sanitize_for_dynamodb
-
-    row = {
-        "track_genre": "pop",
-        "listen_date": pd.Timestamp("2024-01-15").date(),
-        "listen_count": 1,
-        "unique_listeners": 1,
-        "total_listening_time_ms": 100,
-        "avg_listening_time_per_user_ms": 100.5,
-    }
-    item = build_genre_kpi_item(row)
-    sanitised = sanitize_for_dynamodb(item)
-    assert isinstance(sanitised["avg_listening_time_per_user_ms"], Decimal)
-    # Verify no naked floats remain anywhere
-    assert not any(isinstance(v, float) for v in sanitised.values())
-
-
-# ---------------------------------------------------------------------------
-# ingest_dataframes — orchestration over moto
-# ---------------------------------------------------------------------------
-def _make_genre_kpis_df(n: int) -> pd.DataFrame:
+def _genre_df(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(
-        [
-            {
-                "track_genre": f"g{i}",
-                "listen_date": pd.Timestamp("2024-01-15").date(),
-                "listen_count": i + 1,
-                "unique_listeners": i + 1,
-                "total_listening_time_ms": (i + 1) * 100,
-                "avg_listening_time_per_user_ms": 100.0,
-            }
-            for i in range(n)
-        ]
-    )
-
-
-def test_ingest_writes_more_than_25_genre_kpis_in_one_call(
-    kpi_table: boto3.resource,
-) -> None:
-    genre_kpis = _make_genre_kpis_df(30)
-    top_songs = pd.DataFrame(
+        rows,
         columns=[
             "track_genre",
             "listen_date",
-            "rank",
-            "track_id",
-            "track_name",
-            "artists",
-            "play_count",
-        ]
+            "listen_count",
+            "total_listening_time_ms",
+            "user_ids",
+        ],
     )
-    top_genres = pd.DataFrame(columns=["listen_date", "rank", "track_genre", "listen_count"])
 
-    ingest_dataframes(
-        table=kpi_table,
-        genre_kpis=genre_kpis,
-        top_songs=top_songs,
-        top_genres=top_genres,
+
+def _song_df(rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame(
+        rows,
+        columns=["track_genre", "listen_date", "track_id", "track_name", "artists", "play_count"],
     )
-    assert kpi_table.scan()["Count"] == 30
 
 
-def test_ingest_is_idempotent_on_rerun_same_pk_sk(kpi_table: boto3.resource) -> None:
-    genre_kpis = pd.DataFrame(
+def _get(table, pk, sk):
+    return table.get_item(Key={"pk": pk, "sk": sk}).get("Item")
+
+
+def _query(table, pk):
+    from boto3.dynamodb.conditions import Key
+
+    return table.query(KeyConditionExpression=Key("pk").eq(pk))["Items"]
+
+
+# ---------------------------------------------------------------------------
+# Single file
+# ---------------------------------------------------------------------------
+def test_single_file_computes_genre_kpi(kpi_table: boto3.resource) -> None:
+    genre = _genre_df(
         [
             {
                 "track_genre": "pop",
-                "listen_date": pd.Timestamp("2024-01-15").date(),
-                "listen_count": 100,
-                "unique_listeners": 10,
-                "total_listening_time_ms": 1_000_000,
-                "avg_listening_time_per_user_ms": 100_000.0,
+                "listen_date": _DAY,
+                "listen_count": 3,
+                "total_listening_time_ms": 300_000,
+                "user_ids": ["u1", "u2", "u3"],
             }
         ]
     )
-    empty_songs = pd.DataFrame(
-        columns=[
-            "track_genre",
-            "listen_date",
-            "rank",
-            "track_id",
-            "track_name",
-            "artists",
-            "play_count",
-        ]
-    )
-    empty_genres = pd.DataFrame(columns=["listen_date", "rank", "track_genre", "listen_count"])
-
-    ingest_dataframes(
-        table=kpi_table,
-        genre_kpis=genre_kpis,
-        top_songs=empty_songs,
-        top_genres=empty_genres,
-    )
-    # Rewrite with a different listen_count — same pk+sk, value should be replaced
-    genre_kpis.loc[0, "listen_count"] = 200
-    ingest_dataframes(
-        table=kpi_table,
-        genre_kpis=genre_kpis,
-        top_songs=empty_songs,
-        top_genres=empty_genres,
-    )
-    response = kpi_table.get_item(Key={"pk": "GENRE_KPI#pop#2024-01-15", "sk": "METADATA"})
-    assert response["Item"]["listen_count"] == 200
-    assert kpi_table.scan()["Count"] == 1
-
-
-def test_ingest_writes_all_three_item_types(kpi_table: boto3.resource) -> None:
-    genre_kpis = _make_genre_kpis_df(1)
-    top_songs = pd.DataFrame(
+    songs = _song_df(
         [
             {
-                "track_genre": "g0",
-                "listen_date": pd.Timestamp("2024-01-15").date(),
-                "rank": 1,
+                "track_genre": "pop",
+                "listen_date": _DAY,
                 "track_id": "t1",
                 "track_name": "S1",
                 "artists": "A",
-                "play_count": 50,
+                "play_count": 3,
             }
         ]
     )
-    top_genres = pd.DataFrame(
-        [
-            {
-                "listen_date": pd.Timestamp("2024-01-15").date(),
-                "rank": 1,
-                "track_genre": "g0",
-                "listen_count": 50,
-            }
-        ]
-    )
-    ingest_dataframes(
-        table=kpi_table,
-        genre_kpis=genre_kpis,
-        top_songs=top_songs,
-        top_genres=top_genres,
-    )
-    items = kpi_table.scan()["Items"]
-    pks = sorted(item["pk"] for item in items)
-    assert any(pk.startswith("GENRE_KPI#") for pk in pks)
-    assert any(pk.startswith("TOP_SONGS#") for pk in pks)
-    assert any(pk.startswith("TOP_GENRES#") for pk in pks)
+    merge_partials(kpi_table, genre, songs, execution_id="e1")
+
+    item = _get(kpi_table, "GENRE_KPI#pop#2024-01-15", "METADATA")
+    assert int(item["listen_count"]) == 3
+    assert int(item["unique_listeners"]) == 3
+    assert int(item["total_listening_time_ms"]) == 300_000
+    assert item["avg_listening_time_per_user_ms"] == Decimal("100000")
 
 
-def test_batch_write_re_raises_unexpected_client_error(
-    aws_credentials: None,  # — fixture sets env vars only
+# ---------------------------------------------------------------------------
+# Multiple files for the same day -> aggregate (the core requirement)
+# ---------------------------------------------------------------------------
+def test_two_files_same_day_aggregate_counts_and_union_listeners(
+    kpi_table: boto3.resource,
 ) -> None:
-    """If the underlying batch_writer surfaces a non-retryable ClientError
-    (e.g. table does not exist), the helper must propagate it so Step Functions
-    can route to NotifyFailure rather than silently succeeding."""
+    # File 1
+    merge_partials(
+        kpi_table,
+        _genre_df(
+            [
+                {
+                    "track_genre": "pop",
+                    "listen_date": _DAY,
+                    "listen_count": 2,
+                    "total_listening_time_ms": 300_000,
+                    "user_ids": ["u1", "u2"],
+                }
+            ]
+        ),
+        _song_df(
+            [
+                {
+                    "track_genre": "pop",
+                    "listen_date": _DAY,
+                    "track_id": "t1",
+                    "track_name": "S1",
+                    "artists": "A",
+                    "play_count": 2,
+                }
+            ]
+        ),
+        execution_id="e1",
+    )
+    # File 2 (same day, overlapping user u2)
+    merge_partials(
+        kpi_table,
+        _genre_df(
+            [
+                {
+                    "track_genre": "pop",
+                    "listen_date": _DAY,
+                    "listen_count": 3,
+                    "total_listening_time_ms": 450_000,
+                    "user_ids": ["u2", "u3", "u4"],
+                }
+            ]
+        ),
+        _song_df(
+            [
+                {
+                    "track_genre": "pop",
+                    "listen_date": _DAY,
+                    "track_id": "t1",
+                    "track_name": "S1",
+                    "artists": "A",
+                    "play_count": 1,
+                },
+                {
+                    "track_genre": "pop",
+                    "listen_date": _DAY,
+                    "track_id": "t2",
+                    "track_name": "S2",
+                    "artists": "B",
+                    "play_count": 3,
+                },
+            ]
+        ),
+        execution_id="e2",
+    )
+
+    item = _get(kpi_table, "GENRE_KPI#pop#2024-01-15", "METADATA")
+    assert int(item["listen_count"]) == 5  # 2 + 3
+    assert int(item["total_listening_time_ms"]) == 750_000  # 300k + 450k
+    # union of {u1,u2} and {u2,u3,u4} = {u1,u2,u3,u4} -> 4 distinct
+    assert int(item["unique_listeners"]) == 4
+    assert item["avg_listening_time_per_user_ms"] == Decimal("187500")
+
+    # Top songs: t1 = 2+1 = 3, t2 = 3 -> tie broken by track_id asc
+    songs = sorted(_query(kpi_table, "TOP_SONGS#pop#2024-01-15"), key=lambda r: r["sk"])
+    assert [(s["track_id"], int(s["play_count"])) for s in songs] == [("t1", 3), ("t2", 3)]
+
+    # Top genres for the day
+    genres = _query(kpi_table, "TOP_GENRES#2024-01-15")
+    assert [(g["genre"], int(g["listen_count"])) for g in genres] == [("pop", 5)]
+
+
+# ---------------------------------------------------------------------------
+# Idempotency — re-running the same execution must not double-count
+# ---------------------------------------------------------------------------
+def test_rerunning_same_execution_is_idempotent(kpi_table: boto3.resource) -> None:
+    args = (
+        _genre_df(
+            [
+                {
+                    "track_genre": "pop",
+                    "listen_date": _DAY,
+                    "listen_count": 4,
+                    "total_listening_time_ms": 400_000,
+                    "user_ids": ["u1", "u2"],
+                }
+            ]
+        ),
+        _song_df(
+            [
+                {
+                    "track_genre": "pop",
+                    "listen_date": _DAY,
+                    "track_id": "t1",
+                    "track_name": "S1",
+                    "artists": "A",
+                    "play_count": 4,
+                }
+            ]
+        ),
+    )
+    merge_partials(kpi_table, *args, execution_id="e1")
+    merge_partials(kpi_table, *args, execution_id="e1")  # retry of the same execution
+
+    item = _get(kpi_table, "GENRE_KPI#pop#2024-01-15", "METADATA")
+    assert int(item["listen_count"]) == 4  # not 8
+    assert int(item["unique_listeners"]) == 2
+
+
+def test_top_genres_ranks_by_listen_count_desc(kpi_table: boto3.resource) -> None:
+    merge_partials(
+        kpi_table,
+        _genre_df(
+            [
+                {
+                    "track_genre": "pop",
+                    "listen_date": _DAY,
+                    "listen_count": 10,
+                    "total_listening_time_ms": 1000,
+                    "user_ids": ["u1"],
+                },
+                {
+                    "track_genre": "rock",
+                    "listen_date": _DAY,
+                    "listen_count": 20,
+                    "total_listening_time_ms": 2000,
+                    "user_ids": ["u2"],
+                },
+            ]
+        ),
+        _song_df([]),
+        execution_id="e1",
+    )
+    genres = sorted(_query(kpi_table, "TOP_GENRES#2024-01-15"), key=lambda r: r["sk"])
+    assert [(g["genre"], int(g["listen_count"])) for g in genres] == [("rock", 20), ("pop", 10)]
+
+
+# ---------------------------------------------------------------------------
+# Error propagation
+# ---------------------------------------------------------------------------
+def test_batch_write_re_raises_unexpected_client_error(aws_credentials: None) -> None:
+    """A non-retryable ClientError (e.g. missing table) must propagate so Step
+    Functions routes to NotifyFailure rather than silently succeeding."""
     from src.utils.dynamodb_helpers import batch_write_items
 
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
-        # Intentionally point at a table that was never created
         missing_table = resource.Table("does-not-exist")
         with pytest.raises(ClientError) as exc:
-            batch_write_items(
-                missing_table,
-                [{"pk": "X", "sk": "Y", "value": 1}],
-            )
+            batch_write_items(missing_table, [{"pk": "X", "sk": "Y", "value": 1}])
         assert exc.value.response["Error"]["Code"] in {
             "ResourceNotFoundException",
             "ValidationException",

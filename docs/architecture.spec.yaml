@@ -1,0 +1,151 @@
+meta:
+  profile: engineering-review
+  theme: tech-blue
+  layout: horizontal
+  source: generated
+  routing: orthogonal
+  title: Serverless Music Streaming Data Pipeline
+  description: S3 + EventBridge + Step Functions + Glue + DynamoDB
+modules:
+  - id: ingestion
+    label: Ingestion
+  - id: orchestration
+    label: Orchestration & Security
+  - id: processing
+    label: Processing
+  - id: consumers
+    label: Storage & Consumers
+nodes:
+  - id: raw_s3
+    label: S3 raw/streams
+    type: database
+    module: ingestion
+    icon: aws.s3
+  - id: eventbridge
+    label: EventBridge
+    type: service
+    module: ingestion
+    icon: aws.eventbridge
+  - id: sfn
+    label: Step Functions
+    type: service
+    module: orchestration
+    icon: aws.step_functions
+  - id: iam
+    label: IAM
+    type: service
+    module: orchestration
+    icon: aws.identity_and_access_management_iam
+  - id: cw
+    label: CloudWatch Logs
+    type: service
+    module: orchestration
+    icon: aws.cloudwatch
+  - id: sns
+    label: SNS Alerts
+    type: service
+    module: orchestration
+    icon: aws.sns
+  - id: validate
+    label: Validate (Python Shell)
+    type: process
+    module: processing
+    icon: aws.glue
+  - id: transform
+    label: Transform KPIs (PySpark)
+    type: process
+    module: processing
+    icon: aws.glue
+  - id: ingest
+    label: Ingest (Python Shell)
+    type: process
+    module: processing
+    icon: aws.glue
+  - id: archive
+    label: Archive (Python Shell)
+    type: process
+    module: processing
+    icon: aws.glue
+  - id: ref_s3
+    label: S3 reference
+    type: database
+    module: processing
+    icon: aws.s3
+  - id: processed_s3
+    label: S3 processed
+    type: database
+    module: processing
+    icon: aws.s3
+  - id: archive_s3
+    label: S3 archive
+    type: database
+    module: processing
+    icon: aws.s3
+  - id: dynamodb
+    label: DynamoDB
+    type: database
+    module: consumers
+    icon: aws.dynamodb
+  - id: app
+    label: Downstream App
+    type: service
+    module: consumers
+  - id: analyst
+    label: Business Analyst
+    type: user
+    module: consumers
+edges:
+  - from: raw_s3
+    to: eventbridge
+    type: data
+    label: ObjectCreated
+  - from: eventbridge
+    to: sfn
+    type: primary
+    label: trigger
+  - from: sfn
+    to: validate
+    type: primary
+  - from: validate
+    to: transform
+    type: primary
+  - from: transform
+    to: ingest
+    type: primary
+  - from: ingest
+    to: archive
+    type: primary
+  - from: ref_s3
+    to: transform
+    type: data
+    label: reference
+  - from: transform
+    to: processed_s3
+    type: data
+    label: Parquet
+  - from: processed_s3
+    to: ingest
+    type: data
+  - from: ingest
+    to: dynamodb
+    type: data
+  - from: archive
+    to: archive_s3
+    type: data
+  - from: sfn
+    to: sns
+    type: optional
+    label: on failure
+  - from: sfn
+    to: cw
+    type: optional
+    label: logs
+  - from: iam
+    to: sfn
+    type: dependency
+  - from: dynamodb
+    to: app
+    type: primary
+  - from: dynamodb
+    to: analyst
+    type: primary

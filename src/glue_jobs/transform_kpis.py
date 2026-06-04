@@ -1,45 +1,34 @@
-"""Glue PySpark (4.0) — compute daily KPIs from streams + reference data.
+"""Glue PySpark (4.0) — compute per-file KPI *partials* from streams + reference data.
 
-Pipeline:
+Why partials (not final KPIs)
+-----------------------------
+Batch files arrive at unpredictable intervals and **multiple files can belong to
+the same day**. Daily KPIs must therefore be *aggregated across every file for a
+day*, not computed per-file-and-overwritten. To make that possible, this job
+emits mergeable partials that the ingest job folds into DynamoDB:
 
-1. Read the incoming streams CSV plus the two reference CSVs from S3.
-2. Inner-join streams with broadcast(songs) and broadcast(users) — rows whose
-   ``track_id`` or ``user_id`` are missing from the reference tables are
-   intentionally dropped (per spec §Assumptions).
-3. Derive ``listen_date`` in UTC from the ``listen_time`` timestamp.
-4. Compute three KPI datasets per calendar day:
-     * Genre-Level KPI (one row per genre+day)
-     * Top-3 Songs per genre per day (rank 1..3, ties broken by track_id ASC)
-     * Top-5 Genres per day (rank 1..5, ties broken by track_genre ASC)
-5. Write each dataset as Parquet to ``s3://<bucket>/processed/<dataset>/``
-   with ``mode="overwrite"`` so re-runs are idempotent (the whole prefix is
-   replaced atomically).
+* ``genre_partials/`` -> one row per (genre, day) with this file's
+  ``listen_count``, ``total_listening_time_ms`` and the **set of user_ids**
+  (``collect_set``) so the ingest can union users for a correct distinct count.
+* ``song_partials/``  -> one row per (genre, day, track) with this file's
+  ``play_count``.
 
-The transform is split into pure DataFrame -> DataFrame helpers so unit
-tests can exercise the aggregation logic with the SparkSession fixture
-without touching S3 or boto3.
+Ranking (top-3 songs, top-5 genres) and the derived metrics (unique_listeners,
+average listening time) are computed by the ingest job *after* merging, so they
+always reflect the full day.
+
+The transform is split into pure DataFrame -> DataFrame helpers so unit tests can
+exercise the aggregation logic with the SparkSession fixture without touching S3.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from typing import TYPE_CHECKING
 
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import (
-    broadcast,
-    coalesce,
-    col,
-    count,
-    countDistinct,
-    dense_rank,
-    lit,
-    to_date,
-)
-from pyspark.sql.functions import round as _round
+from pyspark.sql.functions import coalesce, col, collect_set, count, lit, to_date
 from pyspark.sql.functions import sum as _sum
-from pyspark.sql.window import Window
 
 
 def _ensure_src_importable() -> None:
@@ -75,12 +64,7 @@ from src.utils.schema_registry import (
     USERS_SELECT_COLUMNS,
 )
 
-if TYPE_CHECKING:
-    pass
-
 _JOB_NAME = "transform_kpis"
-_TOP_SONGS_PER_GENRE = 3
-_TOP_GENRES_PER_DAY = 5
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +72,8 @@ _TOP_GENRES_PER_DAY = 5
 # ---------------------------------------------------------------------------
 def build_enriched(streams_df: DataFrame, songs_df: DataFrame, users_df: DataFrame) -> DataFrame:
     """Inner-join streams with broadcast songs + users, derive UTC ``listen_date``."""
+    from pyspark.sql.functions import broadcast
+
     return (
         streams_df.join(broadcast(songs_df), on="track_id", how="inner")
         .join(broadcast(users_df), on="user_id", how="inner")
@@ -95,87 +81,58 @@ def build_enriched(streams_df: DataFrame, songs_df: DataFrame, users_df: DataFra
     )
 
 
-def compute_genre_kpis(enriched_df: DataFrame) -> DataFrame:
-    """Aggregate genre-level KPIs per calendar day.
+def compute_genre_partials(enriched_df: DataFrame) -> DataFrame:
+    """Per-file genre aggregates that the ingest job merges into the daily KPI.
 
-    Columns: track_genre, listen_date, listen_count, unique_listeners,
-    total_listening_time_ms, avg_listening_time_per_user_ms (rounded to 2 dp).
+    Columns: track_genre, listen_date, listen_count, total_listening_time_ms,
+    user_ids (array of distinct users in *this file* for the genre+day).
+
+    ``unique_listeners`` and ``avg_listening_time_per_user_ms`` are intentionally
+    NOT computed here — they are derived in the ingest after the per-day user
+    sets from all files are unioned (distinct counts are not additive).
     """
-    return (
-        enriched_df.groupBy("track_genre", "listen_date")
-        .agg(
-            count("*").alias("listen_count"),
-            countDistinct("user_id").alias("unique_listeners"),
-            # Null-safe: a group whose matched songs all have a null duration_ms
-            # would otherwise sum to NULL, which DynamoDB ingest can't cast to int.
-            coalesce(_sum("duration_ms"), lit(0)).alias("total_listening_time_ms"),
-        )
-        .withColumn(
-            "avg_listening_time_per_user_ms",
-            _round(
-                col("total_listening_time_ms") / col("unique_listeners"),
-                2,
-            ),
-        )
+    return enriched_df.groupBy("track_genre", "listen_date").agg(
+        count("*").alias("listen_count"),
+        # Null-safe: a group whose matched songs all have a null duration_ms
+        # would otherwise sum to NULL, which DynamoDB ingest can't cast to int.
+        coalesce(_sum("duration_ms"), lit(0)).alias("total_listening_time_ms"),
+        collect_set("user_id").alias("user_ids"),
     )
 
 
-def rank_top_songs(enriched_df: DataFrame, top_n: int = _TOP_SONGS_PER_GENRE) -> DataFrame:
-    """Top-N songs per genre per day by play_count (tie-break track_id ASC)."""
-    play_counts = enriched_df.groupBy(
+def compute_song_partials(enriched_df: DataFrame) -> DataFrame:
+    """Per-file play counts per (genre, day, track), merged + ranked by the ingest.
+
+    Columns: track_genre, listen_date, track_id, track_name, artists, play_count.
+    Top-3 ranking is applied in the ingest against the *cumulative* counts.
+    """
+    return enriched_df.groupBy(
         "track_genre", "listen_date", "track_id", "track_name", "artists"
     ).agg(count("*").alias("play_count"))
-
-    window = Window.partitionBy("track_genre", "listen_date").orderBy(
-        col("play_count").desc(), col("track_id").asc()
-    )
-    return (
-        play_counts.withColumn("rank", dense_rank().over(window))
-        .filter(col("rank") <= top_n)
-        .select(
-            "track_genre",
-            "listen_date",
-            "rank",
-            "track_id",
-            "track_name",
-            "artists",
-            "play_count",
-        )
-    )
-
-
-def rank_top_genres(genre_kpi_df: DataFrame, top_n: int = _TOP_GENRES_PER_DAY) -> DataFrame:
-    """Top-N genres per day by listen_count (tie-break track_genre ASC)."""
-    window = Window.partitionBy("listen_date").orderBy(
-        col("listen_count").desc(), col("track_genre").asc()
-    )
-    return (
-        genre_kpi_df.select("track_genre", "listen_date", "listen_count")
-        .withColumn("rank", dense_rank().over(window))
-        .filter(col("rank") <= top_n)
-        .select("listen_date", "rank", "track_genre", "listen_count")
-    )
 
 
 # ---------------------------------------------------------------------------
 # S3-wired orchestration
 # ---------------------------------------------------------------------------
-def _write_parquet(df: DataFrame, bucket: str, dataset_name: str) -> None:  # pragma: no cover
-    """Coalesce to one file and overwrite s3://bucket/processed/<dataset>/ as Parquet.
+def _write_parquet(
+    df: DataFrame, bucket: str, execution_id: str, dataset_name: str
+) -> None:  # pragma: no cover
+    """Overwrite s3://bucket/processed/<execution_id>/<dataset>/ as Parquet.
 
-    Uses native Spark Parquet output rather than awswrangler: Glue 4.0 Spark does
-    not bundle awswrangler, and pip-installing it pulls a numpy build that is ABI
-    incompatible with Glue's pandas/pyarrow ("numpy.core.multiarray failed to
-    import"). Spark's writer needs no extra dependencies and avoids collecting
-    the whole dataset to the driver via toPandas().
+    The path is execution-scoped so concurrent same-day executions never clobber
+    each other's handoff. Uses native Spark Parquet output rather than
+    awswrangler: Glue 4.0 Spark does not bundle awswrangler, and pip-installing
+    it pulls a numpy build that is ABI incompatible with Glue's pandas/pyarrow.
     """
-    (df.coalesce(1).write.mode("overwrite").parquet(f"s3://{bucket}/processed/{dataset_name}/"))
+    df.coalesce(1).write.mode("overwrite").parquet(
+        f"s3://{bucket}/processed/{execution_id}/{dataset_name}/"
+    )
 
 
 def transform(
-    *, bucket: str, s3_key: str, spark: SparkSession | None = None
+    *, bucket: str, s3_key: str, execution_id: str, spark: SparkSession | None = None
 ) -> None:  # pragma: no cover
-    """Read inputs, compute KPIs, and write three Parquet datasets to S3."""
+    """Read inputs, compute per-file KPI partials, and write them to S3."""
     logger = get_logger(_JOB_NAME)
     log(logger, "info", "Starting transform", bucket=bucket, s3_key=s3_key)
 
@@ -194,18 +151,14 @@ def transform(
     enriched_count = enriched.count()
     log(logger, "info", "Enriched dataframe materialised", row_count=enriched_count)
 
-    genre_kpis = compute_genre_kpis(enriched)
-    top_songs = rank_top_songs(enriched, top_n=_TOP_SONGS_PER_GENRE)
-    top_genres = rank_top_genres(genre_kpis, top_n=_TOP_GENRES_PER_DAY)
+    genre_partials = compute_genre_partials(enriched)
+    song_partials = compute_song_partials(enriched)
 
-    _write_parquet(genre_kpis, bucket, "genre_kpis")
-    log(logger, "info", "Wrote genre_kpis Parquet", dataset="genre_kpis")
+    _write_parquet(genre_partials, bucket, execution_id, "genre_partials")
+    log(logger, "info", "Wrote genre_partials Parquet", dataset="genre_partials")
 
-    _write_parquet(top_songs, bucket, "top_songs")
-    log(logger, "info", "Wrote top_songs Parquet", dataset="top_songs")
-
-    _write_parquet(top_genres, bucket, "top_genres")
-    log(logger, "info", "Wrote top_genres Parquet", dataset="top_genres")
+    _write_parquet(song_partials, bucket, execution_id, "song_partials")
+    log(logger, "info", "Wrote song_partials Parquet", dataset="song_partials")
 
     enriched.unpersist()
     log(logger, "info", "Transform complete")
@@ -213,13 +166,11 @@ def transform(
 
 def main() -> None:  # pragma: no cover
     """Glue entrypoint — parse args, propagate execution_id, run :func:`transform`."""
-    # awsglue.utils is only available inside the Glue runtime, so this function
-    # is exercised by deploys + integration tests, not unit tests.
     from awsglue.utils import getResolvedOptions
 
     args = getResolvedOptions(sys.argv, ["s3_key", "bucket", "execution_id"])
     os.environ["EXECUTION_ID"] = args["execution_id"]
-    transform(bucket=args["bucket"], s3_key=args["s3_key"])
+    transform(bucket=args["bucket"], s3_key=args["s3_key"], execution_id=args["execution_id"])
 
 
 if __name__ == "__main__":

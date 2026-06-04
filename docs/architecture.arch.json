@@ -1,0 +1,248 @@
+{
+  "version": 1,
+  "title": "Serverless Music Streaming Data Pipeline",
+  "type": "engineering-diagram",
+  "source": "generated",
+  "profile": "engineering-review",
+  "theme": "tech-blue",
+  "layout": "horizontal",
+  "counts": {
+    "nodes": 16,
+    "edges": 16,
+    "modules": 4
+  },
+  "nodes": [
+    {
+      "id": "raw_s3",
+      "label": "S3 raw/streams",
+      "type": "database",
+      "module": "ingestion",
+      "icon": "aws.s3"
+    },
+    {
+      "id": "eventbridge",
+      "label": "EventBridge",
+      "type": "service",
+      "module": "ingestion",
+      "icon": "aws.eventbridge"
+    },
+    {
+      "id": "sfn",
+      "label": "Step Functions",
+      "type": "service",
+      "module": "orchestration",
+      "icon": "aws.step_functions"
+    },
+    {
+      "id": "iam",
+      "label": "IAM",
+      "type": "service",
+      "module": "orchestration",
+      "icon": "aws.identity_and_access_management_iam"
+    },
+    {
+      "id": "cw",
+      "label": "CloudWatch Logs",
+      "type": "service",
+      "module": "orchestration",
+      "icon": "aws.cloudwatch"
+    },
+    {
+      "id": "sns",
+      "label": "SNS Alerts",
+      "type": "service",
+      "module": "orchestration",
+      "icon": "aws.sns"
+    },
+    {
+      "id": "validate",
+      "label": "Validate (Python Shell)",
+      "type": "process",
+      "module": "processing",
+      "icon": "aws.glue"
+    },
+    {
+      "id": "transform",
+      "label": "Transform KPIs (PySpark)",
+      "type": "process",
+      "module": "processing",
+      "icon": "aws.glue"
+    },
+    {
+      "id": "ingest",
+      "label": "Ingest (Python Shell)",
+      "type": "process",
+      "module": "processing",
+      "icon": "aws.glue"
+    },
+    {
+      "id": "archive",
+      "label": "Archive (Python Shell)",
+      "type": "process",
+      "module": "processing",
+      "icon": "aws.glue"
+    },
+    {
+      "id": "ref_s3",
+      "label": "S3 reference",
+      "type": "database",
+      "module": "processing",
+      "icon": "aws.s3"
+    },
+    {
+      "id": "processed_s3",
+      "label": "S3 processed",
+      "type": "database",
+      "module": "processing",
+      "icon": "aws.s3"
+    },
+    {
+      "id": "archive_s3",
+      "label": "S3 archive",
+      "type": "database",
+      "module": "processing",
+      "icon": "aws.s3"
+    },
+    {
+      "id": "dynamodb",
+      "label": "DynamoDB",
+      "type": "database",
+      "module": "consumers",
+      "icon": "aws.dynamodb"
+    },
+    {
+      "id": "app",
+      "label": "Downstream App",
+      "type": "service",
+      "module": "consumers"
+    },
+    {
+      "id": "analyst",
+      "label": "Business Analyst",
+      "type": "user",
+      "module": "consumers"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-1",
+      "from": "raw_s3",
+      "to": "eventbridge",
+      "type": "data",
+      "label": "ObjectCreated"
+    },
+    {
+      "id": "edge-2",
+      "from": "eventbridge",
+      "to": "sfn",
+      "type": "primary",
+      "label": "trigger"
+    },
+    {
+      "id": "edge-3",
+      "from": "sfn",
+      "to": "validate",
+      "type": "primary"
+    },
+    {
+      "id": "edge-4",
+      "from": "validate",
+      "to": "transform",
+      "type": "primary"
+    },
+    {
+      "id": "edge-5",
+      "from": "transform",
+      "to": "ingest",
+      "type": "primary"
+    },
+    {
+      "id": "edge-6",
+      "from": "ingest",
+      "to": "archive",
+      "type": "primary"
+    },
+    {
+      "id": "edge-7",
+      "from": "ref_s3",
+      "to": "transform",
+      "type": "data",
+      "label": "reference"
+    },
+    {
+      "id": "edge-8",
+      "from": "transform",
+      "to": "processed_s3",
+      "type": "data",
+      "label": "Parquet"
+    },
+    {
+      "id": "edge-9",
+      "from": "processed_s3",
+      "to": "ingest",
+      "type": "data"
+    },
+    {
+      "id": "edge-10",
+      "from": "ingest",
+      "to": "dynamodb",
+      "type": "data"
+    },
+    {
+      "id": "edge-11",
+      "from": "archive",
+      "to": "archive_s3",
+      "type": "data"
+    },
+    {
+      "id": "edge-12",
+      "from": "sfn",
+      "to": "sns",
+      "type": "optional",
+      "label": "on failure"
+    },
+    {
+      "id": "edge-13",
+      "from": "sfn",
+      "to": "cw",
+      "type": "optional",
+      "label": "logs"
+    },
+    {
+      "id": "edge-14",
+      "from": "iam",
+      "to": "sfn",
+      "type": "dependency"
+    },
+    {
+      "id": "edge-15",
+      "from": "dynamodb",
+      "to": "app",
+      "type": "primary"
+    },
+    {
+      "id": "edge-16",
+      "from": "dynamodb",
+      "to": "analyst",
+      "type": "primary"
+    }
+  ],
+  "modules": [
+    {
+      "id": "ingestion",
+      "label": "Ingestion"
+    },
+    {
+      "id": "orchestration",
+      "label": "Orchestration & Security"
+    },
+    {
+      "id": "processing",
+      "label": "Processing"
+    },
+    {
+      "id": "consumers",
+      "label": "Storage & Consumers"
+    }
+  ]
+}

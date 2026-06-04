@@ -3,29 +3,28 @@
 Each test wires the job's pure logic against moto-backed AWS services (and the
 session-scoped SparkSession from conftest.py for the transform). The real
 ``main()`` Glue entrypoints aren't exercised here — they read awsglue.utils
-which only exists inside the Glue runtime; those paths are covered by CI
-deploy + smoke runs.
+which only exists inside the Glue runtime; those paths are covered by CI deploy
++ smoke runs.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Generator
-from datetime import date, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import boto3
-import pandas as pd
 import pytest
+from boto3.dynamodb.conditions import Key
 from moto import mock_aws
 
 from src.glue_jobs.archive_files import archive
-from src.glue_jobs.ingest_to_dynamodb import ingest_dataframes
+from src.glue_jobs.ingest_to_dynamodb import merge_partials
 from src.glue_jobs.transform_kpis import (
     build_enriched,
-    compute_genre_kpis,
-    rank_top_genres,
-    rank_top_songs,
+    compute_genre_partials,
+    compute_song_partials,
 )
 from src.glue_jobs.validate_schema import validate
 
@@ -75,24 +74,30 @@ def _reset_named_loggers() -> Generator[None, None, None]:
     yield
 
 
+def _get(table, pk, sk):
+    return table.get_item(Key={"pk": pk, "sk": sk}).get("Item")
+
+
+def _query(table, pk):
+    return table.query(KeyConditionExpression=Key("pk").eq(pk))["Items"]
+
+
 # ===========================================================================
-# 1. validate_schema integration — exits 0 on valid, exits 1 on invalid
+# 1. validate_schema integration
 # ===========================================================================
 def test_validate_schema_integration(s3_bucket: boto3.client) -> None:
     s3_bucket.put_object(Bucket=_BUCKET, Key="raw/streams/valid.csv", Body=_VALID_CSV)
     s3_bucket.put_object(Bucket=_BUCKET, Key="raw/streams/invalid.csv", Body=_INVALID_CSV)
 
-    # Valid CSV — no SystemExit
     validate(bucket=_BUCKET, s3_key="raw/streams/valid.csv", s3_client=s3_bucket)
 
-    # Invalid CSV — SystemExit(1)
     with pytest.raises(SystemExit) as exc:
         validate(bucket=_BUCKET, s3_key="raw/streams/invalid.csv", s3_client=s3_bucket)
     assert exc.value.code == 1
 
 
 # ===========================================================================
-# 2. transform_kpis integration — three KPI DataFrames produced from raw inputs
+# 2. transform_kpis integration — per-file partials produced from raw inputs
 # ===========================================================================
 def test_transform_kpis_integration(spark: SparkSession) -> None:
     streams = spark.createDataFrame(
@@ -100,8 +105,6 @@ def test_transform_kpis_integration(spark: SparkSession) -> None:
             ("u1", "t1", datetime(2026, 5, 18, 10, 0, 0)),
             ("u2", "t1", datetime(2026, 5, 18, 11, 0, 0)),
             ("u1", "t2", datetime(2026, 5, 18, 12, 0, 0)),
-            ("u2", "t3", datetime(2026, 5, 19, 9, 0, 0)),
-            ("u1", "t3", datetime(2026, 5, 19, 10, 0, 0)),
         ],
         schema=["user_id", "track_id", "listen_time"],
     )
@@ -109,102 +112,60 @@ def test_transform_kpis_integration(spark: SparkSession) -> None:
         [
             ("t1", "Song1", "ArtistA", "pop", 180_000),
             ("t2", "Song2", "ArtistB", "pop", 200_000),
-            ("t3", "Song3", "ArtistC", "rock", 240_000),
         ],
         schema=["track_id", "track_name", "artists", "track_genre", "duration_ms"],
     )
     users = spark.createDataFrame([("u1",), ("u2",)], schema=["user_id"])
 
     enriched = build_enriched(streams, songs, users)
-    assert enriched.count() == 5
+    assert enriched.count() == 3
 
-    genre_kpis = compute_genre_kpis(enriched)
-    pop_d1 = next(
-        row
-        for row in genre_kpis.collect()
-        if row["track_genre"] == "pop" and row["listen_date"] == date(2026, 5, 18)
-    )
-    assert pop_d1["listen_count"] == 3
-    assert pop_d1["unique_listeners"] == 2
+    genre = compute_genre_partials(enriched).collect()[0]
+    assert genre["listen_count"] == 3
+    assert set(genre["user_ids"]) == {"u1", "u2"}
 
-    top_songs = rank_top_songs(enriched, top_n=3)
-    assert set(top_songs.columns) == {
+    songs_p = compute_song_partials(enriched)
+    assert set(songs_p.columns) == {
         "track_genre",
         "listen_date",
-        "rank",
         "track_id",
         "track_name",
         "artists",
         "play_count",
     }
-    assert top_songs.count() > 0
-
-    top_genres = rank_top_genres(genre_kpis, top_n=5)
-    assert set(top_genres.columns) == {
-        "listen_date",
-        "rank",
-        "track_genre",
-        "listen_count",
-    }
-    assert top_genres.count() > 0
 
 
 # ===========================================================================
-# 3. ingest_to_dynamodb integration — three Parquet-shaped DataFrames -> items
+# 3. transform -> ingest integration on Spark + moto
 # ===========================================================================
-def test_ingest_to_dynamodb_integration(kpi_table: boto3.resource) -> None:
-    genre_kpis = pd.DataFrame(
+def test_transform_then_ingest_integration(spark: SparkSession, kpi_table: boto3.resource) -> None:
+    streams = spark.createDataFrame(
         [
-            {
-                "track_genre": "pop",
-                "listen_date": date(2024, 1, 15),
-                "listen_count": 4521,
-                "unique_listeners": 312,
-                "total_listening_time_ms": 13_254_678,
-                "avg_listening_time_per_user_ms": 42467.56,
-            }
-        ]
+            ("u1", "t1", datetime(2024, 1, 15, 10, 0, 0)),
+            ("u2", "t1", datetime(2024, 1, 15, 11, 0, 0)),
+        ],
+        schema=["user_id", "track_id", "listen_time"],
     )
-    top_songs = pd.DataFrame(
-        [
-            {
-                "track_genre": "pop",
-                "listen_date": date(2024, 1, 15),
-                "rank": 1,
-                "track_id": "t-001",
-                "track_name": "Hit",
-                "artists": "Star",
-                "play_count": 99,
-            }
-        ]
+    songs = spark.createDataFrame(
+        [("t1", "Hit", "Star", "pop", 200_000)],
+        schema=["track_id", "track_name", "artists", "track_genre", "duration_ms"],
     )
-    top_genres = pd.DataFrame(
-        [
-            {
-                "listen_date": date(2024, 1, 15),
-                "rank": 1,
-                "track_genre": "pop",
-                "listen_count": 4521,
-            }
-        ]
+    users = spark.createDataFrame([("u1",), ("u2",)], schema=["user_id"])
+    enriched = build_enriched(streams, songs, users)
+
+    merge_partials(
+        kpi_table,
+        compute_genre_partials(enriched).toPandas(),
+        compute_song_partials(enriched).toPandas(),
+        execution_id="exec-1",
     )
 
-    ingest_dataframes(
-        table=kpi_table,
-        genre_kpis=genre_kpis,
-        top_songs=top_songs,
-        top_genres=top_genres,
-    )
+    item = _get(kpi_table, "GENRE_KPI#pop#2024-01-15", "METADATA")
+    assert int(item["listen_count"]) == 2
+    assert int(item["unique_listeners"]) == 2
+    assert int(item["total_listening_time_ms"]) == 400_000
 
-    response = kpi_table.get_item(Key={"pk": "GENRE_KPI#pop#2024-01-15", "sk": "METADATA"})
-    item = response["Item"]
-    assert int(item["listen_count"]) == 4521
-    assert int(item["unique_listeners"]) == 312
-    assert int(item["total_listening_time_ms"]) == 13_254_678
-    assert float(item["avg_listening_time_per_user_ms"]) == 42467.56
-
-    # All three pk prefixes are present
-    pks = {item["pk"] for item in kpi_table.scan()["Items"]}
+    pks = {i["pk"] for i in kpi_table.scan()["Items"]}
     assert "GENRE_KPI#pop#2024-01-15" in pks
     assert "TOP_SONGS#pop#2024-01-15" in pks
     assert "TOP_GENRES#2024-01-15" in pks
@@ -227,52 +188,57 @@ def test_archive_files_integration(s3_bucket: boto3.client) -> None:
 
 
 # ===========================================================================
-# 5. Multi-file concurrent — two files in sequence, DynamoDB items are additive
+# 5. Multiple files for the SAME day aggregate into one daily KPI
 # ===========================================================================
-def test_pipeline_multi_file_concurrent(spark: SparkSession, kpi_table: boto3.resource) -> None:
+def test_two_files_same_day_aggregate(spark: SparkSession, kpi_table: boto3.resource) -> None:
     songs = spark.createDataFrame(
         [
             ("t1", "Song1", "A", "pop", 100_000),
-            ("t2", "Song2", "B", "rock", 100_000),
+            ("t2", "Song2", "B", "pop", 100_000),
         ],
         schema=["track_id", "track_name", "artists", "track_genre", "duration_ms"],
     )
-    users = spark.createDataFrame([("u1",), ("u2",)], schema=["user_id"])
+    users = spark.createDataFrame([("u1",), ("u2",), ("u3",)], schema=["user_id"])
 
-    # --- File 1: day 2024-01-15 ---
-    streams_d1 = spark.createDataFrame(
+    # File 1 (day 2024-01-15): u1, u2 each play t1
+    streams1 = spark.createDataFrame(
         [
             ("u1", "t1", datetime(2024, 1, 15, 10, 0, 0)),
             ("u2", "t1", datetime(2024, 1, 15, 11, 0, 0)),
         ],
         schema=["user_id", "track_id", "listen_time"],
     )
-    enriched_d1 = build_enriched(streams_d1, songs, users)
-    ingest_dataframes(
-        table=kpi_table,
-        genre_kpis=compute_genre_kpis(enriched_d1).toPandas(),
-        top_songs=rank_top_songs(enriched_d1, top_n=3).toPandas(),
-        top_genres=rank_top_genres(compute_genre_kpis(enriched_d1), top_n=5).toPandas(),
+    e1 = build_enriched(streams1, songs, users)
+    merge_partials(
+        kpi_table,
+        compute_genre_partials(e1).toPandas(),
+        compute_song_partials(e1).toPandas(),
+        execution_id="exec-1",
     )
 
-    # --- File 2: day 2024-01-16 (different date — fully additive) ---
-    streams_d2 = spark.createDataFrame(
+    # File 2 (SAME day): u2 plays t1, u3 plays t2 — overlapping user u2
+    streams2 = spark.createDataFrame(
         [
-            ("u1", "t2", datetime(2024, 1, 16, 9, 0, 0)),
-            ("u2", "t2", datetime(2024, 1, 16, 10, 0, 0)),
+            ("u2", "t1", datetime(2024, 1, 15, 12, 0, 0)),
+            ("u3", "t2", datetime(2024, 1, 15, 13, 0, 0)),
         ],
         schema=["user_id", "track_id", "listen_time"],
     )
-    enriched_d2 = build_enriched(streams_d2, songs, users)
-    ingest_dataframes(
-        table=kpi_table,
-        genre_kpis=compute_genre_kpis(enriched_d2).toPandas(),
-        top_songs=rank_top_songs(enriched_d2, top_n=3).toPandas(),
-        top_genres=rank_top_genres(compute_genre_kpis(enriched_d2), top_n=5).toPandas(),
+    e2 = build_enriched(streams2, songs, users)
+    merge_partials(
+        kpi_table,
+        compute_genre_partials(e2).toPandas(),
+        compute_song_partials(e2).toPandas(),
+        execution_id="exec-2",
     )
 
-    pks = {item["pk"] for item in kpi_table.scan()["Items"]}
-    assert "GENRE_KPI#pop#2024-01-15" in pks
-    assert "GENRE_KPI#rock#2024-01-16" in pks
-    assert "TOP_GENRES#2024-01-15" in pks
-    assert "TOP_GENRES#2024-01-16" in pks
+    item = _get(kpi_table, "GENRE_KPI#pop#2024-01-15", "METADATA")
+    # listen_count = 2 (file1) + 2 (file2) = 4
+    assert int(item["listen_count"]) == 4
+    # unique = union of {u1,u2} and {u2,u3} = {u1,u2,u3} = 3 (NOT 2+2)
+    assert int(item["unique_listeners"]) == 3
+    assert int(item["total_listening_time_ms"]) == 400_000
+
+    # Top songs: t1 = 2 (file1) + 1 (file2) = 3, t2 = 1 -> t1 first
+    songs_ranked = sorted(_query(kpi_table, "TOP_SONGS#pop#2024-01-15"), key=lambda r: r["sk"])
+    assert (songs_ranked[0]["track_id"], int(songs_ranked[0]["play_count"])) == ("t1", 3)

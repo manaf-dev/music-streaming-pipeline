@@ -231,11 +231,14 @@ data "aws_iam_policy_document" "glue_ingest" {
   }
 
   statement {
-    sid    = "WriteKPIs"
+    sid    = "ReadWriteKPIs"
     effect = "Allow"
     actions = [
       "dynamodb:BatchWriteItem",
       "dynamodb:PutItem",
+      # Query is required to recompute served KPIs from the per-execution
+      # partials (GENRE_PARTIAL / SONG_PARTIAL / GENRECOUNT) during merge.
+      "dynamodb:Query",
       "dynamodb:DescribeTable",
     ]
     resources = [var.table_arn]
