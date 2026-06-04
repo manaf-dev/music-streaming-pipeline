@@ -193,11 +193,7 @@ resource "aws_glue_job" "transform" {
   # documentation, the presence of the flag with any non-empty value disables
   # metrics in certain Glue versions; "" is the documented enable-form.
   default_arguments = {
-    "--extra-py-files" = local.utils_zip_s3_uri
-    # Glue 4.0 (Spark) does not bundle awswrangler; the transform writes Parquet
-    # via wr.s3.to_parquet, so install it at job start. (Python Shell's
-    # "analytics" env already includes it, so the other jobs don't need this.)
-    "--additional-python-modules"        = "awswrangler==3.*"
+    "--extra-py-files"                   = local.utils_zip_s3_uri
     "--enable-metrics"                   = ""
     "--enable-spark-ui"                  = "false"
     "--enable-job-insights"              = "true"

@@ -150,17 +150,18 @@ def rank_top_genres(genre_kpi_df: DataFrame, top_n: int = _TOP_GENRES_PER_DAY) -
 # S3-wired orchestration
 # ---------------------------------------------------------------------------
 def _write_parquet(df: DataFrame, bucket: str, dataset_name: str) -> None:  # pragma: no cover
-    """Coalesce, convert to pandas, write to s3://bucket/processed/<dataset>/ as Parquet."""
-    # Covered by integration tests (Phase 8) — unit-testing this requires
-    # mocking awswrangler's S3 client, which adds noise without value.
-    import awswrangler as wr  # local import — only required at runtime, not at unit-test time
+    """Coalesce to one file and overwrite s3://bucket/processed/<dataset>/ as Parquet.
 
-    pandas_df = df.coalesce(1).toPandas()
-    wr.s3.to_parquet(
-        df=pandas_df,
-        path=f"s3://{bucket}/processed/{dataset_name}/",
-        dataset=True,
-        mode="overwrite",
+    Uses native Spark Parquet output rather than awswrangler: Glue 4.0 Spark does
+    not bundle awswrangler, and pip-installing it pulls a numpy build that is ABI
+    incompatible with Glue's pandas/pyarrow ("numpy.core.multiarray failed to
+    import"). Spark's writer needs no extra dependencies and avoids collecting
+    the whole dataset to the driver via toPandas().
+    """
+    (
+        df.coalesce(1)
+        .write.mode("overwrite")
+        .parquet(f"s3://{bucket}/processed/{dataset_name}/")
     )
 
 
