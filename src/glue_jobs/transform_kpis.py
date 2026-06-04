@@ -169,11 +169,7 @@ def _write_parquet(df: DataFrame, bucket: str, dataset_name: str) -> None:  # pr
     import"). Spark's writer needs no extra dependencies and avoids collecting
     the whole dataset to the driver via toPandas().
     """
-    (
-        df.coalesce(1)
-        .write.mode("overwrite")
-        .parquet(f"s3://{bucket}/processed/{dataset_name}/")
-    )
+    (df.coalesce(1).write.mode("overwrite").parquet(f"s3://{bucket}/processed/{dataset_name}/"))
 
 
 def transform(
