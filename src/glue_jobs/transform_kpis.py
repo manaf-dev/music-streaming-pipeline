@@ -27,7 +27,16 @@ import sys
 from typing import TYPE_CHECKING
 
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import broadcast, col, count, countDistinct, dense_rank, to_date
+from pyspark.sql.functions import (
+    broadcast,
+    coalesce,
+    col,
+    count,
+    countDistinct,
+    dense_rank,
+    lit,
+    to_date,
+)
 from pyspark.sql.functions import round as _round
 from pyspark.sql.functions import sum as _sum
 from pyspark.sql.window import Window
@@ -97,7 +106,9 @@ def compute_genre_kpis(enriched_df: DataFrame) -> DataFrame:
         .agg(
             count("*").alias("listen_count"),
             countDistinct("user_id").alias("unique_listeners"),
-            _sum("duration_ms").alias("total_listening_time_ms"),
+            # Null-safe: a group whose matched songs all have a null duration_ms
+            # would otherwise sum to NULL, which DynamoDB ingest can't cast to int.
+            coalesce(_sum("duration_ms"), lit(0)).alias("total_listening_time_ms"),
         )
         .withColumn(
             "avg_listening_time_per_user_ms",
