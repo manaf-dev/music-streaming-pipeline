@@ -51,8 +51,7 @@ and is never summed.
 ## Architecture
 
 The architecture is defined in [`docs/architecture.drawio`](docs/architecture.drawio)
-using real AWS service icons. Open it in [diagrams.net](https://app.diagrams.net)
-or the VS Code *Draw.io Integration* extension. To render the embed below on
+using real AWS service icons. To render the embed below on
 GitHub, export a PNG (**File → Export as → PNG**) to `docs/architecture.drawio.png`.
 
 ![Architecture Diagram](docs/architecture.drawio.png)
