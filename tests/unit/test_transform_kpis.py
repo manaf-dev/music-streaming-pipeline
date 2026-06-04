@@ -117,13 +117,24 @@ def test_compute_genre_partials_output_columns_match_schema(
 
 def test_compute_genre_partials_total_is_null_safe(spark: SparkSession) -> None:
     # A matched song with a NULL duration must not produce a NULL sum.
+    from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
     streams = spark.createDataFrame(
         [("u1", "t1", datetime(2026, 5, 18, 10, 0, 0))],
         schema=["user_id", "track_id", "listen_time"],
     )
+    # Explicit schema: an all-NULL duration_ms column cannot be type-inferred.
     songs = spark.createDataFrame(
         [("t1", "S", "A", "pop", None)],
-        schema=["track_id", "track_name", "artists", "track_genre", "duration_ms"],
+        schema=StructType(
+            [
+                StructField("track_id", StringType()),
+                StructField("track_name", StringType()),
+                StructField("artists", StringType()),
+                StructField("track_genre", StringType()),
+                StructField("duration_ms", IntegerType()),
+            ]
+        ),
     )
     users = spark.createDataFrame([("u1",)], schema=["user_id"])
     enriched = build_enriched(streams, songs, users)
