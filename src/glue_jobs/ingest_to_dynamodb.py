@@ -71,7 +71,9 @@ def _to_str_set(value: Any) -> set[str]:
     """Coerce a parquet array cell (list / numpy array / scalar) to a set of str."""
     if value is None:
         return set()
-    if isinstance(value, str | bytes):
+    # Tuple form (not str | bytes): Glue Python Shell runs Python 3.9, where a
+    # PEP 604 union in isinstance() raises TypeError at runtime.
+    if isinstance(value, (str, bytes)):  # noqa: UP038
         return {value.decode() if isinstance(value, bytes) else value}
     try:
         return {str(item) for item in value}
