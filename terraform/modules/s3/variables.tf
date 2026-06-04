@@ -31,6 +31,12 @@ variable "archive_transition_days" {
   default     = 90
 }
 
+variable "processed_expiration_days" {
+  description = "Days after which intermediate Parquet partials under processed/ are deleted. These are per-execution handoff artifacts that are no longer needed once ingested into DynamoDB."
+  type        = number
+  default     = 30
+}
+
 variable "tags" {
   description = "Additional tags applied to all resources in this module."
   type        = map(string)

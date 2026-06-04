@@ -50,12 +50,12 @@ and is never summed.
 
 ## Architecture
 
-![Architecture Diagram](docs/architecture.drawio.png)
+The architecture is defined in [`docs/architecture.drawio`](docs/architecture.drawio)
+using real AWS service icons. Open it in [diagrams.net](https://app.diagrams.net)
+or the VS Code *Draw.io Integration* extension. To render the embed below on
+GitHub, export a PNG (**File → Export as → PNG**) to `docs/architecture.drawio.png`.
 
-> **TODO**: replace the placeholder `docs/architecture.drawio` with the
-> real diagram and export to PNG so the embed renders on GitHub. The
-> placeholder is a valid drawio file you can open in
-> [diagrams.net](https://app.diagrams.net) to edit.
+![Architecture Diagram](docs/architecture.drawio.png)
 
 The data path:
 
@@ -120,7 +120,7 @@ music-streaming-pipeline/
 ├── tests/
 │   ├── conftest.py                       # SparkSession + AWS-creds fixtures
 │   ├── unit/                             # 55 tests, ~89% coverage
-│   └── integration/                      # Phase 8 — end-to-end with moto
+│   └── integration/                      # end-to-end with moto
 ├── terraform/
 │   ├── modules/
 │   │   ├── s3/                           # Bucket + EventBridge notif + lifecycle
@@ -131,7 +131,7 @@ music-streaming-pipeline/
 │   └── environments/
 │       ├── dev/                          # auto-deploy on push to development
 │       └── prod/                         # manual-approval on push to main
-├── .github/workflows/                    # CI + CD-dev + CD-prod (Phase 8)
+├── .github/workflows/                    # CI + CD-dev + CD-prod
 ├── scripts/
 │   ├── upload_sample_data.sh             # Drop a CSV in raw/streams/
 │   └── query_dynamodb.sh                 # boto3 demos for the 3 KPI access patterns
@@ -204,23 +204,37 @@ before feeding it to three aggregations + a window-ranked top-N.
 
 Per `(track_genre, listen_date)` the transform emits:
 
-| KPI                              | Definition                              |
-|----------------------------------|-----------------------------------------|
-| `listen_count`                   | `COUNT(*)` of stream events             |
-| `unique_listeners`               | `COUNT(DISTINCT user_id)`               |
-| `total_listening_time_ms`        | `SUM(songs.duration_ms)`                |
-| `avg_listening_time_per_user_ms` | `total / unique`, rounded to **2 dp**   |
+| KPI                              | Definition                                                   |
+|----------------------------------|--------------------------------------------------------------|
+| `listen_count`                   | `COUNT(*)` of stream events (summed across the day's files)  |
+| `unique_listeners`               | distinct `user_id` — the **union** of all the day's files    |
+| `total_listening_time_ms`        | `SUM(songs.duration_ms)` (summed across the day's files)     |
+| `avg_listening_time_per_user_ms` | `total / unique`, rounded to **2 dp** (derived after merge)  |
 
 Plus:
 
-- **Top-3 songs per genre per day** — `dense_rank()` on play count
+- **Top-3 songs per genre per day** — ranked by cumulative play count
   desc, ties broken by `track_id` ascending.
-- **Top-5 genres per day** — `dense_rank()` on listen count desc,
-  ties broken by `track_genre` ascending.
+- **Top-5 genres per day** — ranked by cumulative listen count desc,
+  ties broken by `genre` ascending.
 
-All three datasets are written as Parquet to
-`s3://<bucket>/processed/<dataset>/` with `mode="overwrite"` so each run
-replaces the whole snapshot atomically.
+### Daily aggregation across files (incremental merge)
+
+Daily KPIs reflect **every file for a day**, even when multiple batches share a
+date. The transform emits per-file *partials* — `genre_partials/` (with a
+`collect_set` of `user_id`) and `song_partials/` — under an execution-scoped
+prefix `s3://<bucket>/processed/<execution_id>/` (so concurrent same-day runs
+never clobber each other). The ingest job records each execution's contribution
+as overwrite-keyed partial items in DynamoDB, then **recomputes** the served
+KPIs from *all* partials for the affected day:
+
+- counters (`listen_count`, `total_listening_time_ms`, `play_count`) are **summed**;
+- `unique_listeners` is the size of the **union** of the per-file user-id sets
+  (distinct counts are not additive);
+- `avg_listening_time_per_user_ms` is derived from the merged totals.
+
+Because every write is overwrite-keyed by execution, re-running a stage produces
+identical output (idempotent, per the constitution).
 
 ## DynamoDB Table Design & Sample Queries
 
@@ -235,6 +249,18 @@ by composite key prefixes:
 
 `sk` rank slots are zero-padded to two digits (`RANK#01`, `RANK#02`, …)
 for natural string ordering.
+
+The same table also holds **internal** items used to make the daily merge
+idempotent and correct (not queried by downstream apps):
+
+| Internal item    | `pk`                              | `sk`                          | Purpose                                            |
+|------------------|-----------------------------------|-------------------------------|----------------------------------------------------|
+| Genre partial    | `GENRE_PARTIAL#<genre>#<date>`    | `EXEC#<execution_id>`         | One execution's listen_count / total / user-id set |
+| Song partial     | `SONG_PARTIAL#<genre>#<date>`     | `EXEC#<execution_id>#TRACK#…` | One execution's per-track play_count               |
+| Genre accumulator| `GENRECOUNT#<date>`               | `GENRE#<genre>`               | Cumulative listen_count, queried to rank Top-5     |
+
+The served items (Genre KPI, Top Songs, Top Genres) are recomputed from these
+on every merge, so the downstream query patterns below are unchanged.
 
 ### Sample queries — AWS CLI
 
@@ -319,7 +345,7 @@ Tests never touch real AWS:
 
 ## CI/CD
 
-> The GitHub Actions workflows ship in Phase 8. The expected layout:
+Three GitHub Actions workflows under `.github/workflows/`:
 
 | Workflow         | Trigger                | Jobs                                                                                |
 |------------------|------------------------|-------------------------------------------------------------------------------------|

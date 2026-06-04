@@ -107,6 +107,26 @@ resource "aws_s3_bucket_lifecycle_configuration" "main" {
       storage_class = "STANDARD_IA"
     }
   }
+
+  # Intermediate Parquet partials under processed/<execution_id>/ are only a
+  # handoff between the transform and ingest jobs. Once ingested they are dead
+  # weight, so expire them (and any lingering multipart uploads).
+  rule {
+    id     = "expire-processed"
+    status = "Enabled"
+
+    filter {
+      prefix = "processed/"
+    }
+
+    expiration {
+      days = var.processed_expiration_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
