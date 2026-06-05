@@ -50,11 +50,7 @@ and is never summed.
 
 ## Architecture
 
-The architecture is defined in [`docs/architecture.drawio`](docs/architecture.drawio)
-using real AWS service icons. To render the embed below on
-GitHub, export a PNG (**File → Export as → PNG**) to `docs/architecture.drawio.png`.
-
-![Architecture Diagram](docs/architecture.drawio.png)
+![Architecture Diagram](docs/architecture.png)
 
 The data path:
 
