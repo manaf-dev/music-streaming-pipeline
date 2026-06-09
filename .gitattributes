@@ -1,0 +1,6 @@
+# Keep canonical test data byte-identical across platforms so that
+# filemd5() (used as source_hash for the S3 reference-data objects) matches
+# between local Windows checkouts and the Linux CI runner. Without this, Git's
+# autocrlf could rewrite line endings and churn the Terraform plan every run.
+*.csv -text
+data/** -text
