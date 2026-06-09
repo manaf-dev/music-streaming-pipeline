@@ -90,6 +90,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Upload utils zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: utils-zip-prod
+          path: terraform/modules/glue/utils.zip
+          if-no-files-found: error
+          retention-days: 7
+
   apply:
     name: Apply (prod, manual approval)
     runs-on: ubuntu-latest
@@ -124,6 +132,12 @@ jobs:
         with:
           name: tfplan-prod
           path: terraform/environments/prod
+
+      - name: Download utils zip
+        uses: actions/download-artifact@v4
+        with:
+          name: utils-zip-prod
+          path: terraform/modules/glue
 
       - name: Terraform apply (saved plan)
         working-directory: terraform/environments/prod

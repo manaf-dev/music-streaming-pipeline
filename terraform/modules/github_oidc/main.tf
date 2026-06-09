@@ -211,6 +211,7 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "states:ListTagsForResource",
       "states:TagResource",
       "states:UntagResource",
+      "states:ValidateStateMachineDefinition",
       "states:Describe*",
       "states:List*",
     ]
