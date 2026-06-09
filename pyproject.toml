@@ -29,6 +29,9 @@ dev = [
     "pre-commit>=3.7,<4",
     "pandas-stubs>=2",
 ]
+dashboard = [
+    "streamlit>=1.35,<2",
+]
 
 [tool.uv]
 # Always include the dev group when running `uv sync` without explicit flags.
@@ -70,6 +73,7 @@ ignore = [
 "tests/**/*.py" = ["D"]            # tests don't need pydocstyle
 "**/__init__.py" = ["D104"]        # package __init__ may be empty
 "src/glue_jobs/*.py" = ["E402"]    # Glue jobs may need sys.path manipulation before imports
+"src/dashboard/app.py" = ["D"]    # Streamlit script — no docstring requirement
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -102,8 +106,14 @@ module = [
     "awswrangler.*",
     "moto.*",
     "awsglue.*",
+    "streamlit.*",
+    "altair.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["src.dashboard.app"]
+ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = "tests.*"

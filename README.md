@@ -23,10 +23,10 @@ on any failure.
 - [Pipeline Components](#pipeline-components)
 - [KPIs Computed](#kpis-computed)
 - [DynamoDB Table Design & Sample Queries](#dynamodb-table-design--sample-queries)
+- [KPI Dashboard](#kpi-dashboard)
 - [Testing](#testing)
 - [CI/CD](#cicd)
 - [Troubleshooting & Logging](#troubleshooting--logging)
-- [Contributing](#contributing)
 
 ---
 
@@ -52,26 +52,13 @@ and is never summed.
 
 ![Architecture Diagram](docs/architecture.png)
 
-The data path:
-
-```
-S3 raw/streams/         EventBridge          Step Functions
-   *.csv upload   ───►   "Object Created"  ─►  Standard Workflow
-                                                     │
-              ┌──────────────┬──────────────┬────────┴────────┬──────────────┐
-              ▼              ▼              ▼                 ▼              ▼
-        validate_schema  transform_kpis  ingest_to_dynamodb  archive_files  NotifyFailure
-        (Python Shell)   (PySpark 4.0)    (Python Shell)     (Python Shell) (SNS email)
-              │              │              │                 │              │
-              ▼              ▼              ▼                 ▼              ▼
-        exits 0/1     processed/*.parquet  KPI items      archive/         SNS topic
-                                          in DynamoDB     raw -> archive
-```
-
-Every step has Retry (2 attempts, 30 s, 2.0 back-off, FULL jitter) and a
-Catch block that fans out to `NotifyFailure`, which publishes a structured
-error message to SNS before the state machine transitions to a `Fail`
-state.
+An S3 `ObjectCreated` event on the `raw/streams/` prefix triggers an
+EventBridge rule that starts a Step Functions Standard Workflow. The workflow
+orchestrates four Glue jobs in sequence — **Validate Schema** → **Transform
+KPIs** (PySpark) → **Ingest to DynamoDB** → **Archive Files** — with retry
+and a `NotifyFailure` catch on every step that publishes a structured error to
+SNS. The Streamlit dashboard in `src/dashboard/` queries the KPI table directly
+as the downstream analyst application.
 
 ## Prerequisites
 
@@ -107,11 +94,14 @@ music-streaming-pipeline/
 │   │   └── archive_files.py              # Python Shell — raw -> archive move
 │   ├── step_functions/
 │   │   └── state_machine.asl.json
-│   └── utils/                            # Packaged as utils.zip, --extra-py-files
-│       ├── logger.py
-│       ├── schema_registry.py
-│       ├── s3_helpers.py
-│       └── dynamodb_helpers.py
+│   ├── utils/                            # Packaged as utils.zip, --extra-py-files
+│   │   ├── logger.py
+│   │   ├── schema_registry.py
+│   │   ├── s3_helpers.py
+│   │   └── dynamodb_helpers.py
+│   └── dashboard/                        # Streamlit analyst dashboard
+│       ├── app.py                        # UI — metric cards, charts, top songs
+│       └── dynamo_client.py              # DynamoDB read helpers
 ├── tests/
 │   ├── conftest.py                       # SparkSession + AWS-creds fixtures
 │   ├── unit/                             # 55 tests, ~89% coverage
@@ -319,6 +309,60 @@ TABLE_NAME=dev-music-streaming-kpis ./scripts/query_dynamodb.sh 2024-01-15
 GENRE=rock TABLE_NAME=dev-music-streaming-kpis ./scripts/query_dynamodb.sh 2024-01-15
 ```
 
+## KPI Dashboard
+
+A Streamlit analyst dashboard provides a live view of every KPI stored in
+DynamoDB. It serves as the downstream consumer in the architecture — the
+layer that makes the pipeline's output tangible.
+
+### What it shows
+
+| Section | Content |
+|---|---|
+| Metric cards | Total streams, unique listeners, total listening time (hrs), genres active |
+| Streams & Unique Listeners by Genre | Grouped bar chart — listen count vs unique listeners per genre |
+| Avg Listening Time per User | Horizontal bar chart — average minutes per user ranked by genre |
+| Top Genres Leaderboard | Ranked table of the top-5 genres for the processing date |
+| Top Songs by Genre | Genre selector + ranked table of top-3 tracks with artist and play count |
+
+### Screenshots
+
+![KPI Dashboard — overview](docs/dashboard-kpi-overview.png)
+
+*Metric cards and genre KPI charts for 34,038 raw streams → 33,979 enriched
+across 113 valid genres on 2024-06-25.*
+
+![KPI Dashboard — leaderboard and top songs](docs/dashboard-top-songs.png)
+
+*Top Genres leaderboard (children → anime → disney → cantopop → happy) and
+per-genre Top Songs table, here showing the children genre.*
+
+### Prerequisites
+
+The dashboard reads directly from the live DynamoDB table using your
+local AWS credentials. The only extra dependency is Streamlit, installed
+via its own uv dependency group:
+
+```bash
+uv sync --group dashboard
+```
+
+### Running
+
+```bash
+uv run --group dashboard streamlit run src/dashboard/app.py
+```
+
+Then open `http://localhost:8501` in your browser. Data is cached for
+5 minutes — hit **R** inside Streamlit to force a refresh.
+
+The dashboard targets the `prod-music-streaming-kpis` table in
+`eu-central-1` by default. To point at a different table or region,
+edit the `_TABLE_NAME` / `_REGION` constants at the top of
+[`src/dashboard/dynamo_client.py`](src/dashboard/dynamo_client.py).
+
+---
+
 ## Testing
 
 ```bash
@@ -362,9 +406,16 @@ Each record contains:
   "job_name": "transform_kpis",
   "execution_id": "<step-functions-execution-name>",
   "message": "Enriched dataframe materialised",
-  "row_count": 11346
+  "row_count": 11319,
+  "join_dropped": 20,
+  "genre_dropped": 7
 }
 ```
+
+`join_dropped` counts streams whose `track_id` or `user_id` had no match in
+the reference CSVs. `genre_dropped` counts streams whose matched `track_genre`
+was a numeric value (dirty reference data) and were removed before KPI
+computation. Both emit a `warning`-level log line when non-zero.
 
 CloudWatch log groups follow a predictable layout:
 
@@ -391,15 +442,6 @@ Common issues:
   `dynamodb_helpers.batch_write_items` instead of calling
   `Table.batch_writer()` directly.
 
-## Contributing
-
-1. Branch from `development` using `feature/<short-description>`.
-2. Conventional commits (`feat(...)`, `fix(...)`, `chore(...)`, etc.).
-3. Run `make lint && make typecheck && make test` locally before pushing.
-4. Pre-commit hooks enforce ruff and mypy on every commit — install
-   them once with `make pre-commit-install`.
-5. PRs target `development`. `main` only receives merges from `development`
-   for a production deploy.
 
 The `data/` directory is the canonical local test dataset — do not modify,
 overwrite, or regenerate it.

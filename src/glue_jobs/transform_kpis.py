@@ -111,6 +111,18 @@ def compute_song_partials(enriched_df: DataFrame) -> DataFrame:
     ).agg(count("*").alias("play_count"))
 
 
+def filter_valid_genres(enriched_df: DataFrame) -> DataFrame:
+    """Drop rows whose track_genre is a numeric string — dirty reference data.
+
+    Some tracks in songs.csv carry numeric values in track_genre (e.g. "0.34",
+    "151.539") rather than a valid genre name. These are artifacts of the source
+    Spotify dataset. Keeping them produces KPI records with meaningless genre keys
+    that pollute the leaderboard; filtering here prevents any downstream impact.
+    A genre is considered valid when it contains at least one ASCII letter.
+    """
+    return enriched_df.filter(col("track_genre").rlike(r"[a-zA-Z]"))
+
+
 # ---------------------------------------------------------------------------
 # S3-wired orchestration
 # ---------------------------------------------------------------------------
@@ -147,9 +159,43 @@ def transform(
         f"s3://{bucket}/reference/users/users.csv", header=True, inferSchema=True
     ).select(*USERS_SELECT_COLUMNS)
 
-    enriched = build_enriched(streams_df, songs_df, users_df).cache()
+    streams_count = streams_df.count()
+    log(logger, "info", "Streams loaded", row_count=streams_count)
+
+    # Stage 1 — inner join: drops streams with no matching track or user in reference data.
+    enriched_raw = build_enriched(streams_df, songs_df, users_df).cache()
+    enriched_raw_count = enriched_raw.count()
+    join_dropped = streams_count - enriched_raw_count
+    if join_dropped:
+        log(
+            logger,
+            "warning",
+            "Streams dropped: no match in reference data",
+            count=join_dropped,
+            detail="track_id absent from songs.csv or user_id absent from users.csv",
+        )
+
+    # Stage 2 — genre filter: drops streams whose joined track_genre is numeric (dirty data).
+    enriched = filter_valid_genres(enriched_raw).cache()
     enriched_count = enriched.count()
-    log(logger, "info", "Enriched dataframe materialised", row_count=enriched_count)
+    genre_dropped = enriched_raw_count - enriched_count
+    if genre_dropped:
+        log(
+            logger,
+            "warning",
+            "Streams dropped: numeric track_genre in songs.csv",
+            count=genre_dropped,
+        )
+    enriched_raw.unpersist()
+
+    log(
+        logger,
+        "info",
+        "Enriched dataframe materialised",
+        row_count=enriched_count,
+        join_dropped=join_dropped,
+        genre_dropped=genre_dropped,
+    )
 
     genre_partials = compute_genre_partials(enriched)
     song_partials = compute_song_partials(enriched)

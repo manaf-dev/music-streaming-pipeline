@@ -18,6 +18,7 @@ from src.glue_jobs.transform_kpis import (
     build_enriched,
     compute_genre_partials,
     compute_song_partials,
+    filter_valid_genres,
 )
 
 if TYPE_CHECKING:
@@ -171,6 +172,35 @@ def test_compute_song_partials_output_columns_match_schema(
         "artists",
         "play_count",
     }
+
+
+# ---------------------------------------------------------------------------
+# filter_valid_genres
+# ---------------------------------------------------------------------------
+def test_filter_valid_genres_drops_numeric_genres(spark: SparkSession) -> None:
+    df = spark.createDataFrame(
+        [("0.34",), ("151.539",), ("1",), ("125.262",)],
+        schema=["track_genre"],
+    )
+    assert filter_valid_genres(df).count() == 0
+
+
+def test_filter_valid_genres_keeps_valid_text_genres(spark: SparkSession) -> None:
+    df = spark.createDataFrame(
+        [("pop",), ("drum-and-bass",), ("children",), ("R&B",)],
+        schema=["track_genre"],
+    )
+    assert filter_valid_genres(df).count() == 4
+
+
+def test_filter_valid_genres_handles_mixed_batch(spark: SparkSession) -> None:
+    df = spark.createDataFrame(
+        [("pop",), ("0.34",), ("rock",), ("151.539",), ("jazz",)],
+        schema=["track_genre"],
+    )
+    result = filter_valid_genres(df)
+    assert result.count() == 3
+    assert {r["track_genre"] for r in result.collect()} == {"pop", "rock", "jazz"}
 
 
 _ = pytest  # keep import live for the spark fixture
