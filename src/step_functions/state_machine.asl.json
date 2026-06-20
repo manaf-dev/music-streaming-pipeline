@@ -1,10 +1,11 @@
 {
-  "Comment": "Music streaming KPI pipeline: Validate -> Transform -> Ingest -> Archive. Triggered by S3 ObjectCreated under raw/streams/ via EventBridge. All four steps are idempotent so a failed execution is retried by re-uploading the file.",
+  "Comment": "Music streaming KPI pipeline: Validate -> Transform -> Ingest -> Archive (S3 SDK). Triggered ONLY by streams CSV uploads under raw/streams/ via EventBridge. songs.csv and users.csv are static reference data (Terraform-managed, not upload-triggered).",
   "StartAt": "ValidateSchema",
   "TimeoutSeconds": 1800,
   "States": {
     "ValidateSchema": {
       "Type": "Task",
+      "TimeoutSeconds": 660,
       "Resource": "arn:aws:states:::glue:startJobRun.sync",
       "Parameters": {
         "JobName": "${validate_job_name}",
@@ -36,6 +37,7 @@
     },
     "TransformKPIs": {
       "Type": "Task",
+      "TimeoutSeconds": 1920,
       "Resource": "arn:aws:states:::glue:startJobRun.sync",
       "Parameters": {
         "JobName": "${transform_job_name}",
@@ -67,6 +69,7 @@
     },
     "IngestToDynamoDB": {
       "Type": "Task",
+      "TimeoutSeconds": 1920,
       "Resource": "arn:aws:states:::glue:startJobRun.sync",
       "Parameters": {
         "JobName": "${ingest_job_name}",
@@ -94,31 +97,65 @@
           "Next": "NotifyFailure"
         }
       ],
-      "Next": "ArchiveFiles"
+      "Next": "ArchiveCopyToS3"
     },
-    "ArchiveFiles": {
+    "ArchiveCopyToS3": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "TimeoutSeconds": 120,
+      "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
       "Parameters": {
-        "JobName": "${archive_job_name}",
-        "Arguments": {
-          "--s3_key.$": "$.detail.object.key",
-          "--bucket.$": "$.detail.bucket.name",
-          "--execution_id.$": "$$.Execution.Name"
-        }
+        "Bucket.$": "$.detail.bucket.name",
+        "CopySource.$": "States.Format('/{}/{}', $.detail.bucket.name, $.detail.object.key)",
+        "Key.$": "States.StringReplace($.detail.object.key, 'raw/', 'archive/')"
       },
-      "ResultPath": "$.archive_result",
+      "ResultPath": "$.archive_copy_result",
       "Retry": [
         {
           "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 30,
+          "IntervalSeconds": 10,
           "MaxAttempts": 2,
           "BackoffRate": 2.0,
-          "MaxDelaySeconds": 300,
           "JitterStrategy": "FULL"
         }
       ],
       "Catch": [
+        {
+          "ErrorEquals": ["S3.NoSuchKeyException", "S3.NoSuchKey", "NoSuchKey"],
+          "ResultPath": "$.archive_copy_skip",
+          "Next": "ArchiveDeleteRaw"
+        },
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "NotifyFailure"
+        }
+      ],
+      "Next": "ArchiveDeleteRaw"
+    },
+    "ArchiveDeleteRaw": {
+      "Type": "Task",
+      "TimeoutSeconds": 60,
+      "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
+      "Parameters": {
+        "Bucket.$": "$.detail.bucket.name",
+        "Key.$": "$.detail.object.key"
+      },
+      "ResultPath": "$.archive_delete_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["S3.NoSuchKeyException", "S3.NoSuchKey", "NoSuchKey"],
+          "ResultPath": "$.archive_delete_skip",
+          "Next": "PipelineSucceeded"
+        },
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.error",
@@ -129,6 +166,7 @@
     },
     "NotifyFailure": {
       "Type": "Task",
+      "TimeoutSeconds": 60,
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "${sns_topic_arn}",
