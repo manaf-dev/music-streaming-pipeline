@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from botocore.exceptions import ClientError
+
 
 def get_s3_client() -> Any:
     """Return a default-configured boto3 S3 client."""
@@ -39,3 +41,23 @@ def copy_s3_object(client: Any, bucket: str, source_key: str, dest_key: str) -> 
 def delete_s3_object(client: Any, bucket: str, key: str) -> None:
     """Delete ``s3://{bucket}/{key}`` (no-op when the key is already absent)."""
     client.delete_object(Bucket=bucket, Key=key)
+
+
+def object_exists(client: Any, bucket: str, key: str) -> bool:
+    """Return True when ``s3://{bucket}/{key}`` exists."""
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        raise
+    return True
+
+
+def derive_archive_key(s3_key: str, *, raw_prefix: str = "raw/") -> str:
+    """Map a ``raw/``-prefixed key to its ``archive/`` counterpart."""
+    if not s3_key.startswith(raw_prefix):
+        msg = f"Expected key under {raw_prefix!r}, got {s3_key!r}"
+        raise ValueError(msg)
+    return "archive/" + s3_key[len(raw_prefix) :]

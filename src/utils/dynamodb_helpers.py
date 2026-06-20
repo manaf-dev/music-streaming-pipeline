@@ -18,7 +18,7 @@ DynamoDB rejects native ``float`` values — they MUST be ``decimal.Decimal``.
 Idempotent daily aggregation (partials + recompute)
 ---------------------------------------------------
 Daily KPIs must aggregate across *every* file for a day, yet each pipeline stage
-must be safely re-runnable (constitution §IV). A naive ``ADD`` counter would
+must be safely re-runnable. A naive ``ADD`` counter would
 double-count on retries and race on concurrent same-day files. Instead:
 
 * Each execution writes its **own** contribution as overwrite-keyed partials:
@@ -40,6 +40,7 @@ distinct counts are not additive, so the raw user ids are kept on the partials.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -49,11 +50,24 @@ _DEFAULT_PKEYS: list[str] = ["pk", "sk"]
 
 TOP_SONGS_PER_GENRE = 3
 TOP_GENRES_PER_DAY = 5
+TTL_RETENTION_DAYS = 90
 
 
 def sanitize_for_dynamodb(item: dict[str, Any]) -> dict[str, Any]:
     """Recursively replace ``float`` values with ``Decimal`` for DynamoDB compatibility."""
     return {key: _convert_value(value) for key, value in item.items()}
+
+
+def expires_at_for_date(date_str: str, *, retention_days: int = TTL_RETENTION_DAYS) -> int:
+    """Return a Unix epoch TTL value ``retention_days`` after the KPI date (UTC)."""
+    kpi_day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    expire_at = kpi_day + timedelta(days=retention_days)
+    return int(expire_at.timestamp())
+
+
+def _attach_ttl(item: dict[str, Any], *, date: str) -> dict[str, Any]:
+    item["expires_at"] = expires_at_for_date(date)
+    return item
 
 
 def _convert_value(value: Any) -> Any:
@@ -84,6 +98,14 @@ def batch_write_items(
 # ---------------------------------------------------------------------------
 # Partial writers (one execution's idempotent contribution)
 # ---------------------------------------------------------------------------
+def _delete_stale_rank_slots(table: Any, pk: str, *, keep_sks: set[str]) -> None:
+    """Remove rank slots that fell out of the current Top-N."""
+    for item in _query_all(table, pk):
+        sk = str(item["sk"])
+        if sk.startswith("RANK#") and sk not in keep_sks:
+            table.delete_item(Key={"pk": pk, "sk": sk})
+
+
 def _query_all(table: Any, pk: str) -> list[dict[str, Any]]:
     """Return every item under partition key ``pk`` (handling pagination)."""
     items: list[dict[str, Any]] = []
@@ -120,7 +142,7 @@ def put_genre_partial(
     # DynamoDB String Sets cannot be empty; only attach when non-empty.
     if users:
         item["user_ids"] = users
-    table.put_item(Item=sanitize_for_dynamodb(item))
+    table.put_item(Item=sanitize_for_dynamodb(_attach_ttl(item, date=date)))
 
 
 def put_song_partials(table: Any, rows: list[dict[str, Any]]) -> None:
@@ -130,14 +152,17 @@ def put_song_partials(table: Any, rows: list[dict[str, Any]]) -> None:
     artists, play_count.
     """
     items: list[dict[str, Any]] = [
-        {
-            "pk": f"SONG_PARTIAL#{row['genre']}#{row['date']}",
-            "sk": f"EXEC#{row['execution_id']}#TRACK#{row['track_id']}",
-            "track_id": str(row["track_id"]),
-            "track_name": str(row["track_name"]),
-            "artists": str(row["artists"]),
-            "play_count": int(row["play_count"]),
-        }
+        _attach_ttl(
+            {
+                "pk": f"SONG_PARTIAL#{row['genre']}#{row['date']}",
+                "sk": f"EXEC#{row['execution_id']}#TRACK#{row['track_id']}",
+                "track_id": str(row["track_id"]),
+                "track_name": str(row["track_name"]),
+                "artists": str(row["artists"]),
+                "play_count": int(row["play_count"]),
+            },
+            date=str(row["date"]),
+        )
         for row in rows
     ]
     if items:
@@ -160,22 +185,28 @@ def recompute_genre_kpi(table: Any, *, genre: str, date: str) -> None:
     batch_write_items(
         table,
         [
-            {
-                "pk": f"GENRE_KPI#{genre}#{date}",
-                "sk": "METADATA",
-                "genre": genre,
-                "date": date,
-                "listen_count": listen_count,
-                "unique_listeners": unique,
-                "total_listening_time_ms": total,
-                "avg_listening_time_per_user_ms": avg,
-            },
-            {
-                "pk": f"GENRECOUNT#{date}",
-                "sk": f"GENRE#{genre}",
-                "genre": genre,
-                "listen_count": listen_count,
-            },
+            _attach_ttl(
+                {
+                    "pk": f"GENRE_KPI#{genre}#{date}",
+                    "sk": "METADATA",
+                    "genre": genre,
+                    "date": date,
+                    "listen_count": listen_count,
+                    "unique_listeners": unique,
+                    "total_listening_time_ms": total,
+                    "avg_listening_time_per_user_ms": avg,
+                },
+                date=date,
+            ),
+            _attach_ttl(
+                {
+                    "pk": f"GENRECOUNT#{date}",
+                    "sk": f"GENRE#{genre}",
+                    "genre": genre,
+                    "listen_count": listen_count,
+                },
+                date=date,
+            ),
         ],
     )
 
@@ -197,18 +228,24 @@ def recompute_top_songs(
         )
         entry["play_count"] += int(p["play_count"])
     ranked = sorted(agg.items(), key=lambda kv: (-kv[1]["play_count"], kv[0]))[:top_n]
+    pk = f"TOP_SONGS#{genre}#{date}"
     items: list[dict[str, Any]] = [
-        {
-            "pk": f"TOP_SONGS#{genre}#{date}",
-            "sk": f"RANK#{rank:02d}",
-            "rank": rank,
-            "track_id": tid,
-            "track_name": entry["track_name"],
-            "artists": entry["artists"],
-            "play_count": int(entry["play_count"]),
-        }
+        _attach_ttl(
+            {
+                "pk": pk,
+                "sk": f"RANK#{rank:02d}",
+                "rank": rank,
+                "track_id": tid,
+                "track_name": entry["track_name"],
+                "artists": entry["artists"],
+                "play_count": int(entry["play_count"]),
+            },
+            date=date,
+        )
         for rank, (tid, entry) in enumerate(ranked, start=1)
     ]
+    keep_sks = {item["sk"] for item in items}
+    _delete_stale_rank_slots(table, pk, keep_sks=keep_sks)
     if items:
         batch_write_items(table, items)
 
@@ -219,15 +256,21 @@ def recompute_top_genres(table: Any, *, date: str, top_n: int = TOP_GENRES_PER_D
         _query_all(table, f"GENRECOUNT#{date}"),
         key=lambda r: (-int(r["listen_count"]), str(r["genre"])),
     )[:top_n]
+    pk = f"TOP_GENRES#{date}"
     items: list[dict[str, Any]] = [
-        {
-            "pk": f"TOP_GENRES#{date}",
-            "sk": f"RANK#{rank:02d}",
-            "rank": rank,
-            "genre": str(row["genre"]),
-            "listen_count": int(row["listen_count"]),
-        }
+        _attach_ttl(
+            {
+                "pk": pk,
+                "sk": f"RANK#{rank:02d}",
+                "rank": rank,
+                "genre": str(row["genre"]),
+                "listen_count": int(row["listen_count"]),
+            },
+            date=date,
+        )
         for rank, row in enumerate(rows, start=1)
     ]
+    keep_sks = {item["sk"] for item in items}
+    _delete_stale_rank_slots(table, pk, keep_sks=keep_sks)
     if items:
         batch_write_items(table, items)

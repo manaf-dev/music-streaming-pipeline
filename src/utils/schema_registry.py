@@ -23,3 +23,10 @@ SONGS_SELECT_COLUMNS: list[str] = [
 
 #: Columns projected from ``users.csv`` — only ``user_id`` is needed for the join.
 USERS_SELECT_COLUMNS: list[str] = ["user_id"]
+
+#: Static reference objects in S3 — uploaded by Terraform at apply, NOT event-triggered.
+#: The validate job checks these exist before any streams file is processed.
+REFERENCE_DATA_KEYS: list[str] = [
+    "reference/songs/songs.csv",
+    "reference/users/users.csv",
+]

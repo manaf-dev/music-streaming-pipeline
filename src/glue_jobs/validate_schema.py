@@ -1,11 +1,14 @@
 """Glue Python Shell — validate an incoming streams CSV before transform.
 
 Reads the CSV from S3 (lazy boto3 client — injectable for moto-based tests)
-and enforces three rules before the pipeline proceeds:
+and enforces four rules before the pipeline proceeds:
 
-1. Every column in :data:`REQUIRED_STREAM_COLUMNS` must be present.
-2. The file must contain at least one data row.
-3. The first 100 ``listen_time`` values must parse as ISO-8601 timestamps.
+1. Static reference data (``songs.csv``, ``users.csv``) must already exist in S3.
+   These are uploaded by Terraform at apply time and are **not** upload-triggered;
+   only ``raw/streams/*.csv`` files wake the pipeline via EventBridge.
+2. Every column in :data:`REQUIRED_STREAM_COLUMNS` must be present.
+3. The file must contain at least one data row.
+4. The first 100 ``listen_time`` values must parse as ISO-8601 timestamps.
 
 On any failure the job emits a structured-JSON error log and exits with
 status 1, which Step Functions catches and routes to ``NotifyFailure`` ->
@@ -51,8 +54,8 @@ def _ensure_src_importable() -> None:
 _ensure_src_importable()
 
 from src.utils.logger import get_logger, log
-from src.utils.s3_helpers import get_s3_client, read_csv_bytes
-from src.utils.schema_registry import REQUIRED_STREAM_COLUMNS
+from src.utils.s3_helpers import get_s3_client, object_exists, read_csv_bytes
+from src.utils.schema_registry import REFERENCE_DATA_KEYS, REQUIRED_STREAM_COLUMNS
 
 _JOB_NAME = "validate_schema"
 _LISTEN_TIME_SAMPLE_SIZE = 100
@@ -64,6 +67,18 @@ def validate(*, bucket: str, s3_key: str, s3_client: Any | None = None) -> None:
     log(logger, "info", "Starting validation", bucket=bucket, s3_key=s3_key)
 
     client = s3_client if s3_client is not None else get_s3_client()
+
+    missing_reference = [key for key in REFERENCE_DATA_KEYS if not object_exists(client, bucket, key)]
+    if missing_reference:
+        log(
+            logger,
+            "error",
+            "Static reference data missing in S3 — run terraform apply to upload songs/users",
+            missing_keys=missing_reference,
+            bucket=bucket,
+        )
+        sys.exit(1)
+
     body = read_csv_bytes(client, bucket, s3_key)
 
     try:
