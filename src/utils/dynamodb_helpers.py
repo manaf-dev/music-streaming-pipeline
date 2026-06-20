@@ -40,7 +40,7 @@ distinct counts are not additive, so the raw user ids are kept on the partials.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -60,7 +60,8 @@ def sanitize_for_dynamodb(item: dict[str, Any]) -> dict[str, Any]:
 
 def expires_at_for_date(date_str: str, *, retention_days: int = TTL_RETENTION_DAYS) -> int:
     """Return a Unix epoch TTL value ``retention_days`` after the KPI date (UTC)."""
-    kpi_day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
+    # timezone.utc — Glue Python Shell 3.9 has no datetime.UTC (3.11+).
+    kpi_day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)  # noqa: UP017
     expire_at = kpi_day + timedelta(days=retention_days)
     return int(expire_at.timestamp())
 
