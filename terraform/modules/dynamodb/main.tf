@@ -1,21 +1,20 @@
 terraform {
-  required_version = ">= 1.7"
+  required_version = ">= 1.5.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.0"
+      version = "~> 6.0"
     }
   }
 }
 
 locals {
-  effective_table_name = coalesce(var.table_name, "${var.env}-music-streaming-kpis")
+  effective_table_name = coalesce(var.table_name, "music-streaming-kpis")
 
   common_tags = merge(
     {
-      Project     = var.project_name
-      Environment = var.env
-      ManagedBy   = "terraform"
+      Project   = var.project_name
+      ManagedBy = "terraform"
     },
     var.tags,
   )

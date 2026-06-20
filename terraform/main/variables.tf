@@ -1,16 +1,10 @@
-variable "env" {
-  description = "Deployment environment (dev, prod)."
-  type        = string
-  default     = "prod"
-}
-
 variable "region" {
   description = "AWS region for all resources."
   type        = string
 }
 
 variable "bucket_name" {
-  description = "Globally unique S3 bucket name."
+  description = "Globally unique S3 bucket name for pipeline data."
   type        = string
 }
 
@@ -20,7 +14,7 @@ variable "sns_alert_email" {
 }
 
 variable "project_name" {
-  description = "Short project identifier."
+  description = "Short project identifier used in resource names and tags."
   type        = string
   default     = "music-streaming-pipeline"
 }

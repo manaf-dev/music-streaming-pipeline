@@ -1,9 +1,9 @@
 terraform {
-  required_version = ">= 1.7"
+  required_version = ">= 1.5.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.0"
+      version = "~> 6.0"
     }
   }
 }
@@ -11,9 +11,8 @@ terraform {
 locals {
   common_tags = merge(
     {
-      Project     = var.project_name
-      Environment = var.env
-      ManagedBy   = "terraform"
+      Project   = var.project_name
+      ManagedBy = "terraform"
     },
     var.tags,
   )
@@ -49,6 +48,51 @@ resource "aws_s3_bucket_public_access_block" "main" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+# Bucket owner owns every object; ACLs disabled (S3 security best practice).
+resource "aws_s3_bucket_ownership_controls" "main" {
+  bucket = aws_s3_bucket.main.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+
+  depends_on = [aws_s3_bucket_public_access_block.main]
+}
+
+# Deny any request not made over TLS (aws:SecureTransport).
+resource "aws_s3_bucket_policy" "main" {
+  bucket = aws_s3_bucket.main.id
+
+  policy = data.aws_iam_policy_document.deny_insecure_transport.json
+
+  depends_on = [aws_s3_bucket_public_access_block.main]
+}
+
+data "aws_iam_policy_document" "deny_insecure_transport" {
+  statement {
+    sid    = "DenyInsecureTransport"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:*"]
+
+    resources = [
+      aws_s3_bucket.main.arn,
+      "${aws_s3_bucket.main.arn}/*",
+    ]
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
 }
 
 # Versioning protects against accidental deletion / overwrite of reference data.
@@ -130,7 +174,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "main" {
 }
 
 # ---------------------------------------------------------------------------
-# Reference data upload — songs and users CSVs into reference/ prefix
+# Reference data upload — static songs and users CSVs (NOT event-triggered).
+# Only raw/streams/*.csv uploads wake the pipeline via EventBridge.
 # ---------------------------------------------------------------------------
 resource "aws_s3_object" "songs_reference" {
   bucket       = aws_s3_bucket.main.id

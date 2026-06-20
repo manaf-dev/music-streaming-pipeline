@@ -1,8 +1,3 @@
-variable "env" {
-  description = "Deployment environment (dev, prod). Used as a prefix for every Glue job name."
-  type        = string
-}
-
 variable "project_name" {
   description = "Short project identifier used in tags."
   type        = string
@@ -31,11 +26,6 @@ variable "transform_role_arn" {
 
 variable "ingest_role_arn" {
   description = "IAM role ARN for the ingest_to_dynamodb Glue job."
-  type        = string
-}
-
-variable "archive_role_arn" {
-  description = "IAM role ARN for the archive_files Glue job."
   type        = string
 }
 

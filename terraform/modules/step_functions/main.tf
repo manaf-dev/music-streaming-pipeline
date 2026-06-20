@@ -1,23 +1,22 @@
 terraform {
-  required_version = ">= 1.7"
+  required_version = ">= 1.5.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.0"
+      version = "~> 6.0"
     }
   }
 }
 
 locals {
-  state_machine_name = "${var.env}-music-streaming-pipeline"
-  sns_topic_name     = "${var.env}-pipeline-alerts"
-  event_rule_name    = "${var.env}-music-streaming-raw-upload"
+  state_machine_name = var.project_name
+  sns_topic_name     = "${var.project_name}-alerts"
+  event_rule_name    = "${var.project_name}-raw-upload"
 
   common_tags = merge(
     {
-      Project     = var.project_name
-      Environment = var.env
-      ManagedBy   = "terraform"
+      Project   = var.project_name
+      ManagedBy = "terraform"
     },
     var.tags,
   )
@@ -63,7 +62,6 @@ resource "aws_sfn_state_machine" "pipeline" {
     validate_job_name  = var.glue_job_names.validate
     transform_job_name = var.glue_job_names.transform
     ingest_job_name    = var.glue_job_names.ingest
-    archive_job_name   = var.glue_job_names.archive
     sns_topic_arn      = aws_sns_topic.alerts.arn
     table_name         = var.table_name
   })
@@ -86,7 +84,7 @@ resource "aws_sfn_state_machine" "pipeline" {
 # ===========================================================================
 resource "aws_cloudwatch_event_rule" "raw_upload" {
   name        = local.event_rule_name
-  description = "Triggers the music streaming pipeline when a CSV lands in raw/streams/."
+  description = "Triggers the music streaming pipeline when a .csv streams file lands in raw/streams/. Reference data (songs/users) is static and does not trigger runs."
 
   event_pattern = jsonencode({
     source        = ["aws.s3"]
@@ -96,7 +94,7 @@ resource "aws_cloudwatch_event_rule" "raw_upload" {
         name = [var.bucket_name]
       }
       object = {
-        key = [{ prefix = "raw/streams/" }]
+        key = [{ prefix = "raw/streams/", suffix = ".csv" }]
       }
     }
   })

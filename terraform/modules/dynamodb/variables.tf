@@ -1,8 +1,3 @@
-variable "env" {
-  description = "Deployment environment (dev, prod)."
-  type        = string
-}
-
 variable "project_name" {
   description = "Short project identifier used in tags and resource names."
   type        = string
@@ -10,7 +5,7 @@ variable "project_name" {
 }
 
 variable "table_name" {
-  description = "DynamoDB table name. Defaults to <env>-music-streaming-kpis when null."
+  description = "DynamoDB table name. Defaults to music-streaming-kpis when null."
   type        = string
   default     = null
 }

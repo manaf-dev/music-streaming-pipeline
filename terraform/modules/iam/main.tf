@@ -1,9 +1,9 @@
 terraform {
-  required_version = ">= 1.7"
+  required_version = ">= 1.5.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.0"
+      version = "~> 6.0"
     }
   }
 }
@@ -11,9 +11,8 @@ terraform {
 locals {
   common_tags = merge(
     {
-      Project     = var.project_name
-      Environment = var.env
-      ManagedBy   = "terraform"
+      Project   = var.project_name
+      ManagedBy = "terraform"
     },
     var.tags,
   )
@@ -21,10 +20,9 @@ locals {
   # Glue job ARNs — constructed deterministically so IAM can be created before
   # the glue module exists (avoids circular dependency).
   job_names = {
-    validate  = "${var.env}-validate-schema"
-    transform = "${var.env}-transform-kpis"
-    ingest    = "${var.env}-ingest-to-dynamodb"
-    archive   = "${var.env}-archive-files"
+    validate  = "${var.project_name}-validate-schema"
+    transform = "${var.project_name}-transform-kpis"
+    ingest    = "${var.project_name}-ingest-to-dynamodb"
   }
   job_arns = {
     for k, name in local.job_names :
@@ -32,9 +30,7 @@ locals {
   }
   all_job_arns = values(local.job_arns)
 
-  # CloudWatch Logs is the one resource the constitution allows to be wildcarded
-  # — Glue auto-creates log groups under /aws-glue/jobs/* and we cannot predict
-  # the exact group names at plan time without colliding with Glue's own setup.
+  # CloudWatch Logs paths under /aws-glue/* are not known at plan time.
   glue_log_groups_arn = "arn:aws:logs:${var.region}:${var.account_id}:log-group:/aws-glue/*"
 }
 
@@ -92,7 +88,7 @@ data "aws_iam_policy_document" "glue_cloudwatch_logs" {
 # Glue: validate_schema — read raw/ only
 # ===========================================================================
 resource "aws_iam_role" "glue_validate" {
-  name               = "${var.env}-glue-validate-schema"
+  name               = "${var.project_name}-glue-validate-schema"
   assume_role_policy = data.aws_iam_policy_document.glue_assume.json
   tags               = local.common_tags
 }
@@ -105,6 +101,14 @@ data "aws_iam_policy_document" "glue_validate" {
     effect    = "Allow"
     actions   = ["s3:GetObject"]
     resources = ["${var.bucket_arn}/raw/*"]
+  }
+
+  # HeadObject (via GetObject) on static reference CSVs before processing streams.
+  statement {
+    sid       = "HeadReferenceData"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${var.bucket_arn}/reference/*"]
   }
 
   statement {
@@ -123,7 +127,7 @@ data "aws_iam_policy_document" "glue_validate" {
 }
 
 resource "aws_iam_role_policy" "glue_validate" {
-  name   = "${var.env}-glue-validate-schema-policy"
+  name   = "${var.project_name}-glue-validate-schema-policy"
   role   = aws_iam_role.glue_validate.id
   policy = data.aws_iam_policy_document.glue_validate.json
 }
@@ -132,7 +136,7 @@ resource "aws_iam_role_policy" "glue_validate" {
 # Glue: transform_kpis — read raw/ + reference/, write processed/
 # ===========================================================================
 resource "aws_iam_role" "glue_transform" {
-  name               = "${var.env}-glue-transform-kpis"
+  name               = "${var.project_name}-glue-transform-kpis"
   assume_role_policy = data.aws_iam_policy_document.glue_assume.json
   tags               = local.common_tags
 }
@@ -192,7 +196,7 @@ data "aws_iam_policy_document" "glue_transform" {
 }
 
 resource "aws_iam_role_policy" "glue_transform" {
-  name   = "${var.env}-glue-transform-kpis-policy"
+  name   = "${var.project_name}-glue-transform-kpis-policy"
   role   = aws_iam_role.glue_transform.id
   policy = data.aws_iam_policy_document.glue_transform.json
 }
@@ -201,7 +205,7 @@ resource "aws_iam_role_policy" "glue_transform" {
 # Glue: ingest_to_dynamodb — read processed/, write DynamoDB
 # ===========================================================================
 resource "aws_iam_role" "glue_ingest" {
-  name               = "${var.env}-glue-ingest-to-dynamodb"
+  name               = "${var.project_name}-glue-ingest-to-dynamodb"
   assume_role_policy = data.aws_iam_policy_document.glue_assume.json
   tags               = local.common_tags
 }
@@ -236,6 +240,7 @@ data "aws_iam_policy_document" "glue_ingest" {
     actions = [
       "dynamodb:BatchWriteItem",
       "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
       # Query is required to recompute served KPIs from the per-execution
       # partials (GENRE_PARTIAL / SONG_PARTIAL / GENRECOUNT) during merge.
       "dynamodb:Query",
@@ -246,63 +251,16 @@ data "aws_iam_policy_document" "glue_ingest" {
 }
 
 resource "aws_iam_role_policy" "glue_ingest" {
-  name   = "${var.env}-glue-ingest-to-dynamodb-policy"
+  name   = "${var.project_name}-glue-ingest-to-dynamodb-policy"
   role   = aws_iam_role.glue_ingest.id
   policy = data.aws_iam_policy_document.glue_ingest.json
 }
 
 # ===========================================================================
-# Glue: archive_files — copy raw/ → archive/ then delete raw/
-# ===========================================================================
-resource "aws_iam_role" "glue_archive" {
-  name               = "${var.env}-glue-archive-files"
-  assume_role_policy = data.aws_iam_policy_document.glue_assume.json
-  tags               = local.common_tags
-}
-
-data "aws_iam_policy_document" "glue_archive" {
-  source_policy_documents = [data.aws_iam_policy_document.glue_cloudwatch_logs.json]
-
-  statement {
-    sid       = "ReadRaw"
-    effect    = "Allow"
-    actions   = ["s3:GetObject"]
-    resources = ["${var.bucket_arn}/raw/*"]
-  }
-
-  statement {
-    sid       = "DeleteRaw"
-    effect    = "Allow"
-    actions   = ["s3:DeleteObject"]
-    resources = ["${var.bucket_arn}/raw/*"]
-  }
-
-  statement {
-    sid       = "WriteArchive"
-    effect    = "Allow"
-    actions   = ["s3:PutObject"]
-    resources = ["${var.bucket_arn}/archive/*"]
-  }
-
-  statement {
-    sid       = "ReadGlueAssets"
-    effect    = "Allow"
-    actions   = ["s3:GetObject"]
-    resources = ["${var.bucket_arn}/glue-assets/*"]
-  }
-}
-
-resource "aws_iam_role_policy" "glue_archive" {
-  name   = "${var.env}-glue-archive-files-policy"
-  role   = aws_iam_role.glue_archive.id
-  policy = data.aws_iam_policy_document.glue_archive.json
-}
-
-# ===========================================================================
-# Step Functions — start/manage all four Glue jobs + publish to SNS
+# Step Functions — start/manage Glue jobs, archive via S3 SDK, publish to SNS
 # ===========================================================================
 resource "aws_iam_role" "step_functions" {
-  name               = "${var.env}-sfn-music-streaming-pipeline"
+  name               = "${var.project_name}-sfn"
   assume_role_policy = data.aws_iam_policy_document.sfn_assume.json
   tags               = local.common_tags
 }
@@ -330,6 +288,20 @@ data "aws_iam_policy_document" "step_functions" {
     resources = [var.sns_topic_arn]
   }
 
+  statement {
+    sid    = "ArchiveProcessedStreams"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+    ]
+    resources = [
+      "${var.bucket_arn}/raw/*",
+      "${var.bucket_arn}/archive/*",
+    ]
+  }
+
   # CloudWatch Logs for the state machine's execution logs.
   statement {
     sid    = "StateMachineLogs"
@@ -349,7 +321,7 @@ data "aws_iam_policy_document" "step_functions" {
 }
 
 resource "aws_iam_role_policy" "step_functions" {
-  name   = "${var.env}-sfn-music-streaming-pipeline-policy"
+  name   = "${var.project_name}-sfn-policy"
   role   = aws_iam_role.step_functions.id
   policy = data.aws_iam_policy_document.step_functions.json
 }
@@ -358,7 +330,7 @@ resource "aws_iam_role_policy" "step_functions" {
 # EventBridge — start the state machine on S3 raw/streams/ ObjectCreated
 # ===========================================================================
 resource "aws_iam_role" "eventbridge" {
-  name               = "${var.env}-eventbridge-music-streaming-pipeline"
+  name               = "${var.project_name}-eventbridge"
   assume_role_policy = data.aws_iam_policy_document.events_assume.json
   tags               = local.common_tags
 }
@@ -373,7 +345,7 @@ data "aws_iam_policy_document" "eventbridge" {
 }
 
 resource "aws_iam_role_policy" "eventbridge" {
-  name   = "${var.env}-eventbridge-music-streaming-pipeline-policy"
+  name   = "${var.project_name}-eventbridge-policy"
   role   = aws_iam_role.eventbridge.id
   policy = data.aws_iam_policy_document.eventbridge.json
 }

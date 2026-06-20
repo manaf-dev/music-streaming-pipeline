@@ -1,17 +1,17 @@
 terraform {
-  required_version = ">= 1.7"
+  required_version = ">= 1.5.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.0"
+      version = "~> 6.0"
     }
     archive = {
       source  = "hashicorp/archive"
-      version = ">= 2.4"
+      version = "~> 2.4"
     }
     time = {
       source  = "hashicorp/time"
-      version = ">= 0.9"
+      version = "~> 0.9"
     }
   }
 }
@@ -19,18 +19,16 @@ terraform {
 locals {
   common_tags = merge(
     {
-      Project     = var.project_name
-      Environment = var.env
-      ManagedBy   = "terraform"
+      Project   = var.project_name
+      ManagedBy = "terraform"
     },
     var.tags,
   )
 
   job_names = {
-    validate  = "${var.env}-validate-schema"
-    transform = "${var.env}-transform-kpis"
-    ingest    = "${var.env}-ingest-to-dynamodb"
-    archive   = "${var.env}-archive-files"
+    validate  = "${var.project_name}-validate-schema"
+    transform = "${var.project_name}-transform-kpis"
+    ingest    = "${var.project_name}-ingest-to-dynamodb"
   }
 
   # Script filenames inside var.glue_scripts_dir — uploaded individually to S3.
@@ -38,7 +36,6 @@ locals {
     validate  = "validate_schema.py"
     transform = "transform_kpis.py"
     ingest    = "ingest_to_dynamodb.py"
-    archive   = "archive_files.py"
   }
 
   scripts_prefix = "glue-assets/scripts"
@@ -130,7 +127,6 @@ resource "time_sleep" "role_propagation" {
       var.validate_role_arn,
       var.transform_role_arn,
       var.ingest_role_arn,
-      var.archive_role_arn,
     ])
   }
 }
@@ -234,37 +230,6 @@ resource "aws_glue_job" "ingest" {
     "--continuous-log-logGroup"          = aws_cloudwatch_log_group.jobs["ingest"].name
     "--job-language"                     = "python"
     # --table_name and --bucket/--execution_id are injected at runtime by Step Functions
-  }
-
-  tags = local.common_tags
-}
-
-# ===========================================================================
-# Glue Python Shell — archive_files
-# ===========================================================================
-resource "aws_glue_job" "archive" {
-  depends_on   = [time_sleep.role_propagation]
-  name         = local.job_names.archive
-  role_arn     = var.archive_role_arn
-  glue_version = "3.0"
-  max_capacity = 0.0625
-  max_retries  = 0
-  timeout      = 10
-  execution_property {
-    max_concurrent_runs = 5
-  }
-
-  command {
-    name            = "pythonshell"
-    script_location = "s3://${var.bucket_name}/${aws_s3_object.scripts["archive"].key}"
-    python_version  = "3.9"
-  }
-
-  default_arguments = {
-    "--extra-py-files"                   = local.utils_zip_s3_uri
-    "--enable-continuous-cloudwatch-log" = "true"
-    "--continuous-log-logGroup"          = aws_cloudwatch_log_group.jobs["archive"].name
-    "--job-language"                     = "python"
   }
 
   tags = local.common_tags

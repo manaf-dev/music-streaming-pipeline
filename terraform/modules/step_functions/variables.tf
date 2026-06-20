@@ -1,8 +1,3 @@
-variable "env" {
-  description = "Deployment environment (dev, prod)."
-  type        = string
-}
-
 variable "project_name" {
   description = "Short project identifier used in tags and resource names."
   type        = string
@@ -20,12 +15,11 @@ variable "eventbridge_role_arn" {
 }
 
 variable "glue_job_names" {
-  description = "Map of Glue job short names to Glue job names (validate, transform, ingest, archive)."
+  description = "Map of Glue job short names to Glue job names (validate, transform, ingest)."
   type = object({
     validate  = string
     transform = string
     ingest    = string
-    archive   = string
   })
 }
 

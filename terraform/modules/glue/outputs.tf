@@ -13,18 +13,12 @@ output "ingest_job_name" {
   value       = aws_glue_job.ingest.name
 }
 
-output "archive_job_name" {
-  description = "Name of the archive_files Glue job."
-  value       = aws_glue_job.archive.name
-}
-
 output "job_arns" {
   description = "ARNs of every Glue job — handy for IAM policy verification."
   value = {
     validate  = aws_glue_job.validate.arn
     transform = aws_glue_job.transform.arn
     ingest    = aws_glue_job.ingest.arn
-    archive   = aws_glue_job.archive.arn
   }
 }
 

@@ -13,11 +13,6 @@ output "ingest_role_arn" {
   value       = aws_iam_role.glue_ingest.arn
 }
 
-output "archive_role_arn" {
-  description = "ARN of the Glue archive_files job role."
-  value       = aws_iam_role.glue_archive.arn
-}
-
 output "sfn_role_arn" {
   description = "ARN of the Step Functions state-machine role."
   value       = aws_iam_role.step_functions.arn
@@ -29,6 +24,6 @@ output "eventbridge_role_arn" {
 }
 
 output "job_arns" {
-  description = "Pre-computed Glue job ARNs by short name (validate, transform, ingest, archive)."
+  description = "Pre-computed Glue job ARNs by short name (validate, transform, ingest)."
   value       = local.job_arns
 }
