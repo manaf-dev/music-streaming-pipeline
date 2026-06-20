@@ -14,21 +14,6 @@ import pytest
 from moto import mock_aws
 
 from src.glue_jobs.validate_schema import validate
-
-
-@pytest.fixture(autouse=True)
-def _reset_validate_schema_logger() -> Generator[None, None, None]:
-    """Drop cached handlers so each test re-binds to its own capsys stdout.
-
-    ``get_logger()`` caches handlers per logger name; without a reset the second
-    test gets the first test's (now stale) ``sys.stdout`` reference and the
-    capsys assertions silently miss every emitted record.
-    """
-    logging.getLogger("validate_schema").handlers.clear()
-    yield
-    logging.getLogger("validate_schema").handlers.clear()
-
-
 from src.utils.schema_registry import REFERENCE_DATA_KEYS
 
 _BUCKET = "test-music-streaming"
@@ -50,6 +35,14 @@ _EMPTY_CSV = b"user_id,track_id,listen_time\n"  # header only, zero data rows
 _UNPARSEABLE_LISTEN_TIME_CSV = (
     b"user_id,track_id,listen_time\n" b"u1,t1,not-a-date\n" b"u2,t2,also-not-a-date\n"
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_validate_schema_logger() -> Generator[None, None, None]:
+    """Drop cached handlers so each test re-binds to its own capsys stdout."""
+    logging.getLogger("validate_schema").handlers.clear()
+    yield
+    logging.getLogger("validate_schema").handlers.clear()
 
 
 @pytest.fixture

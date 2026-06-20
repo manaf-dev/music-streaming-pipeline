@@ -110,10 +110,10 @@ def test_batch_write_with_duplicate_pkeys_in_same_batch_keeps_last_value(
 
 
 def test_expires_at_for_date_is_ninety_days_after_kpi_day() -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import UTC, datetime, timedelta
 
     ttl = expires_at_for_date("2024-01-15")
-    expected = datetime(2024, 1, 15, tzinfo=timezone.utc) + timedelta(days=90)
+    expected = datetime(2024, 1, 15, tzinfo=UTC) + timedelta(days=90)
     assert ttl == int(expected.timestamp())
 
 

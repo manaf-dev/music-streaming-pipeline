@@ -68,7 +68,9 @@ def validate(*, bucket: str, s3_key: str, s3_client: Any | None = None) -> None:
 
     client = s3_client if s3_client is not None else get_s3_client()
 
-    missing_reference = [key for key in REFERENCE_DATA_KEYS if not object_exists(client, bucket, key)]
+    missing_reference = [
+        key for key in REFERENCE_DATA_KEYS if not object_exists(client, bucket, key)
+    ]
     if missing_reference:
         log(
             logger,
