@@ -26,7 +26,6 @@ dev = [
     "pytest>=8,<9",
     "pytest-cov>=5,<7",
     "moto[all]>=5,<6",
-    "pre-commit>=3.7,<4",
     "pandas-stubs>=2",
 ]
 
@@ -110,7 +109,7 @@ module = "tests.*"
 disallow_untyped_defs = false
 
 # ---------------------------------------------------------------------------
-# Pytest — coverage gate enforced at 80% per constitution §III
+# Pytest — 80% coverage gate for CI
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 minversion = "8.0"

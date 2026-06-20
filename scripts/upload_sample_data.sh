@@ -2,31 +2,19 @@
 # Upload a sample streams CSV to s3://<bucket>/raw/streams/, triggering the
 # EventBridge -> Step Functions pipeline.
 #
-# Usage:  ./scripts/upload_sample_data.sh [filename] [env]
-#
-#   filename  Streams CSV under data/streams/  (default: streams1.csv)
-#   env       Terraform environment            (default: dev)
-#
-# The bucket name is read from `terraform output -raw bucket_name` in the
-# matching environment directory, so the script never hardcodes account or
-# bucket identifiers.
+# Usage:  ./scripts/upload_sample_data.sh [filename]
+#         make upload FILE=streams1.csv
 
 set -euo pipefail
 
 FILENAME="${1:-streams1.csv}"
-ENV="${2:-dev}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_FILE="${REPO_ROOT}/data/streams/${FILENAME}"
-ENV_DIR="${REPO_ROOT}/terraform/environments/${ENV}"
+ENV_DIR="${REPO_ROOT}/terraform/main"
 
 if [[ ! -f "${SOURCE_FILE}" ]]; then
   echo "ERROR: source file not found: ${SOURCE_FILE}" >&2
-  exit 1
-fi
-
-if [[ ! -d "${ENV_DIR}" ]]; then
-  echo "ERROR: terraform environment directory not found: ${ENV_DIR}" >&2
   exit 1
 fi
 
@@ -34,7 +22,7 @@ echo "Resolving bucket name from terraform output in ${ENV_DIR}..."
 BUCKET_NAME="$(terraform -chdir="${ENV_DIR}" output -raw bucket_name)"
 
 if [[ -z "${BUCKET_NAME}" ]]; then
-  echo "ERROR: terraform output 'bucket_name' is empty — did you apply the ${ENV} env yet?" >&2
+  echo "ERROR: terraform output 'bucket_name' is empty — run 'make apply' first." >&2
   exit 1
 fi
 

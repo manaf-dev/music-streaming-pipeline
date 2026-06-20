@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [development, main]
+    branches: [main]
   push:
-    branches: [development, main]
+    branches: [main]
 
 # Cancel in-flight runs when a new push or PR update lands.
 concurrency:
@@ -13,7 +13,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  TERRAFORM_VERSION: "1.14.9"
+  TERRAFORM_VERSION: "1.15.5"
 
 jobs:
   lint:
@@ -78,7 +78,7 @@ jobs:
 
       - name: pytest with coverage
         run: |
-          uv run pytest tests/unit/ \
+          uv run pytest tests/ \
             --cov=src \
             --cov-report=xml \
             --cov-report=term-missing \
@@ -93,12 +93,8 @@ jobs:
           if-no-files-found: ignore
 
   tf-validate:
-    name: Terraform validate (${{ matrix.env }})
+    name: Terraform validate
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        env: [dev, prod]
     steps:
       - uses: actions/checkout@v5
 
@@ -111,9 +107,9 @@ jobs:
         run: terraform fmt -recursive -check terraform/
 
       - name: terraform init (no backend)
-        working-directory: terraform/environments/${{ matrix.env }}
+        working-directory: terraform/main
         run: terraform init -backend=false
 
       - name: terraform validate
-        working-directory: terraform/environments/${{ matrix.env }}
+        working-directory: terraform/main
         run: terraform validate

@@ -1,0 +1,172 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3",
+      "Effect": "Allow",
+      "Action": ["s3:*"],
+      "Resource": ["*"]
+    },
+    {
+      "Sid": "DynamoDB",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:DescribeTable",
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateTimeToLive",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:UpdateContinuousBackups",
+        "dynamodb:DescribeContinuousBackups",
+        "dynamodb:TagResource",
+        "dynamodb:UntagResource",
+        "dynamodb:ListTagsOfResource",
+        "dynamodb:Describe*",
+        "dynamodb:List*"
+      ],
+      "Resource": ["*"]
+    },
+    {
+      "Sid": "IAM",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:UpdateRole",
+        "iam:UpdateRoleDescription",
+        "iam:ListRoles",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:PassRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:ListInstanceProfilesForRole",
+        "iam:Get*",
+        "iam:List*"
+      ],
+      "Resource": ["*"]
+    },
+    {
+      "Sid": "Glue",
+      "Effect": "Allow",
+      "Action": [
+        "glue:CreateJob",
+        "glue:DeleteJob",
+        "glue:UpdateJob",
+        "glue:GetJob",
+        "glue:GetJobs",
+        "glue:BatchGetJobs",
+        "glue:GetTags",
+        "glue:TagResource",
+        "glue:UntagResource",
+        "glue:Get*",
+        "glue:List*",
+        "glue:BatchGet*"
+      ],
+      "Resource": ["*"]
+    },
+    {
+      "Sid": "StepFunctions",
+      "Effect": "Allow",
+      "Action": [
+        "states:CreateStateMachine",
+        "states:DeleteStateMachine",
+        "states:UpdateStateMachine",
+        "states:DescribeStateMachine",
+        "states:ListStateMachines",
+        "states:ListTagsForResource",
+        "states:TagResource",
+        "states:UntagResource",
+        "states:ValidateStateMachineDefinition",
+        "states:Describe*",
+        "states:List*"
+      ],
+      "Resource": ["*"]
+    },
+    {
+      "Sid": "EventBridge",
+      "Effect": "Allow",
+      "Action": [
+        "events:PutRule",
+        "events:DeleteRule",
+        "events:DescribeRule",
+        "events:ListRules",
+        "events:EnableRule",
+        "events:DisableRule",
+        "events:PutTargets",
+        "events:RemoveTargets",
+        "events:ListTargetsByRule",
+        "events:ListTagsForResource",
+        "events:TagResource",
+        "events:UntagResource",
+        "events:Describe*",
+        "events:List*"
+      ],
+      "Resource": ["*"]
+    },
+    {
+      "Sid": "SNS",
+      "Effect": "Allow",
+      "Action": [
+        "sns:CreateTopic",
+        "sns:DeleteTopic",
+        "sns:GetTopicAttributes",
+        "sns:SetTopicAttributes",
+        "sns:Subscribe",
+        "sns:Unsubscribe",
+        "sns:ListSubscriptionsByTopic",
+        "sns:GetSubscriptionAttributes",
+        "sns:SetSubscriptionAttributes",
+        "sns:ListTagsForResource",
+        "sns:TagResource",
+        "sns:UntagResource",
+        "sns:Get*",
+        "sns:List*"
+      ],
+      "Resource": ["*"]
+    },
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:DescribeLogGroups",
+        "logs:PutRetentionPolicy",
+        "logs:DeleteRetentionPolicy",
+        "logs:ListTagsForResource",
+        "logs:TagResource",
+        "logs:UntagResource",
+        "logs:Describe*",
+        "logs:Get*",
+        "logs:List*"
+      ],
+      "Resource": ["*"]
+    },
+    {
+      "Sid": "KMSRead",
+      "Effect": "Allow",
+      "Action": [
+        "kms:DescribeKey",
+        "kms:GetKeyPolicy",
+        "kms:GetKeyRotationStatus",
+        "kms:ListAliases",
+        "kms:ListResourceTags"
+      ],
+      "Resource": ["*"]
+    },
+    {
+      "Sid": "STSCallerIdentity",
+      "Effect": "Allow",
+      "Action": ["sts:GetCallerIdentity"],
+      "Resource": ["*"]
+    }
+  ]
+}

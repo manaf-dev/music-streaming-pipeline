@@ -3,7 +3,7 @@
 # music-streaming-kpis DynamoDB table.
 #
 # Reads two env vars:
-#   TABLE_NAME          (default: dev-music-streaming-kpis)
+#   TABLE_NAME          (default: music-streaming-kpis)
 #   AWS_DEFAULT_REGION  (default: eu-central-1)
 #
 # Optional positional arg:
@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-TABLE_NAME="${TABLE_NAME:-dev-music-streaming-kpis}"
+TABLE_NAME="${TABLE_NAME:-music-streaming-kpis}"
 AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-eu-central-1}"
 QUERY_DATE="${1:-$(date -u +%Y-%m-%d)}"
 
