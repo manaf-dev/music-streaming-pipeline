@@ -19,7 +19,6 @@ import pytest
 from boto3.dynamodb.conditions import Key
 from moto import mock_aws
 
-from src.glue_jobs.archive_files import archive
 from src.glue_jobs.ingest_to_dynamodb import merge_partials
 from src.glue_jobs.transform_kpis import (
     build_enriched,
@@ -27,6 +26,8 @@ from src.glue_jobs.transform_kpis import (
     compute_song_partials,
 )
 from src.glue_jobs.validate_schema import validate
+from src.utils.s3_helpers import copy_s3_object, delete_s3_object, derive_archive_key
+from src.utils.schema_registry import REFERENCE_DATA_KEYS
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -69,7 +70,7 @@ def kpi_table(aws_credentials: None) -> Generator[boto3.resource, None, None]:
 @pytest.fixture(autouse=True)
 def _reset_named_loggers() -> Generator[None, None, None]:
     """Re-bind logger handlers each test so capsys-based assertions stay reliable."""
-    for name in ("validate_schema", "transform_kpis", "ingest_to_dynamodb", "archive_files"):
+    for name in ("validate_schema", "transform_kpis", "ingest_to_dynamodb"):
         logging.getLogger(name).handlers.clear()
     yield
 
@@ -82,10 +83,16 @@ def _query(table, pk):
     return table.query(KeyConditionExpression=Key("pk").eq(pk))["Items"]
 
 
+def _put_reference_data(client: boto3.client) -> None:
+    for key in REFERENCE_DATA_KEYS:
+        client.put_object(Bucket=_BUCKET, Key=key, Body=b"placeholder\n")
+
+
 # ===========================================================================
 # 1. validate_schema integration
 # ===========================================================================
 def test_validate_schema_integration(s3_bucket: boto3.client) -> None:
+    _put_reference_data(s3_bucket)
     s3_bucket.put_object(Bucket=_BUCKET, Key="raw/streams/valid.csv", Body=_VALID_CSV)
     s3_bucket.put_object(Bucket=_BUCKET, Key="raw/streams/invalid.csv", Body=_INVALID_CSV)
 
@@ -172,19 +179,19 @@ def test_transform_then_ingest_integration(spark: SparkSession, kpi_table: boto3
 
 
 # ===========================================================================
-# 4. archive_files integration — copy + delete, idempotent on re-run
+# 4. S3 archival helpers — copy + delete (Step Functions uses the AWS SDK)
 # ===========================================================================
-def test_archive_files_integration(s3_bucket: boto3.client) -> None:
-    s3_bucket.put_object(Bucket=_BUCKET, Key="raw/streams/streams1.csv", Body=_VALID_CSV)
+def test_s3_archive_flow_integration(s3_bucket: boto3.client) -> None:
+    raw_key = "raw/streams/streams1.csv"
+    archive_key = derive_archive_key(raw_key)
+    s3_bucket.put_object(Bucket=_BUCKET, Key=raw_key, Body=_VALID_CSV)
 
-    archive(bucket=_BUCKET, s3_key="raw/streams/streams1.csv", s3_client=s3_bucket)
+    copy_s3_object(s3_bucket, _BUCKET, raw_key, archive_key)
+    delete_s3_object(s3_bucket, _BUCKET, raw_key)
 
-    archived = s3_bucket.get_object(Bucket=_BUCKET, Key="archive/streams/streams1.csv")
+    archived = s3_bucket.get_object(Bucket=_BUCKET, Key=archive_key)
     assert archived["Body"].read() == _VALID_CSV
     assert s3_bucket.list_objects_v2(Bucket=_BUCKET, Prefix="raw/streams/").get("KeyCount", 0) == 0
-
-    # Re-running with the source already gone is a no-op that doesn't raise
-    archive(bucket=_BUCKET, s3_key="raw/streams/streams1.csv", s3_client=s3_bucket)
 
 
 # ===========================================================================

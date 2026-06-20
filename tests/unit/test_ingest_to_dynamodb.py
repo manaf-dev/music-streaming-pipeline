@@ -106,6 +106,7 @@ def test_single_file_computes_genre_kpi(kpi_table: boto3.resource) -> None:
     assert int(item["unique_listeners"]) == 3
     assert int(item["total_listening_time_ms"]) == 300_000
     assert item["avg_listening_time_per_user_ms"] == Decimal("100000")
+    assert "expires_at" in item
 
 
 # ---------------------------------------------------------------------------

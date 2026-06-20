@@ -5,7 +5,12 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from src.utils.dynamodb_helpers import batch_write_items, sanitize_for_dynamodb
+from src.utils.dynamodb_helpers import (
+    batch_write_items,
+    expires_at_for_date,
+    recompute_top_songs,
+    sanitize_for_dynamodb,
+)
 
 _TABLE = "test-kpi-table"
 
@@ -102,3 +107,63 @@ def test_batch_write_with_duplicate_pkeys_in_same_batch_keeps_last_value(
     batch_write_items(dynamodb_table, items)
     response = dynamodb_table.get_item(Key={"pk": "X", "sk": "Y"})
     assert response["Item"]["listen_count"] == 2
+
+
+def test_expires_at_for_date_is_ninety_days_after_kpi_day() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    ttl = expires_at_for_date("2024-01-15")
+    expected = datetime(2024, 1, 15, tzinfo=timezone.utc) + timedelta(days=90)
+    assert ttl == int(expected.timestamp())
+
+
+def test_recompute_top_songs_deletes_stale_rank_slots(dynamodb_table: boto3.resource) -> None:
+    """When a genre drops from 3 ranked tracks to 2, RANK#03 must be removed."""
+    pk = "SONG_PARTIAL#pop#2024-01-15"
+    batch_write_items(
+        dynamodb_table,
+        [
+            {
+                "pk": pk,
+                "sk": "EXEC#e1#TRACK#t1",
+                "track_id": "t1",
+                "track_name": "A",
+                "artists": "X",
+                "play_count": 5,
+            },
+            {
+                "pk": pk,
+                "sk": "EXEC#e1#TRACK#t2",
+                "track_id": "t2",
+                "track_name": "B",
+                "artists": "Y",
+                "play_count": 4,
+            },
+            {
+                "pk": pk,
+                "sk": "EXEC#e1#TRACK#t3",
+                "track_id": "t3",
+                "track_name": "C",
+                "artists": "Z",
+                "play_count": 3,
+            },
+        ],
+    )
+    recompute_top_songs(dynamodb_table, genre="pop", date="2024-01-15")
+    assert dynamodb_table.get_item(Key={"pk": "TOP_SONGS#pop#2024-01-15", "sk": "RANK#03"})[
+        "Item"
+    ]
+
+    # Drop t3 from partials and recompute — only two tracks remain.
+    dynamodb_table.delete_item(Key={"pk": pk, "sk": "EXEC#e1#TRACK#t3"})
+    recompute_top_songs(dynamodb_table, genre="pop", date="2024-01-15")
+
+    assert (
+        dynamodb_table.get_item(Key={"pk": "TOP_SONGS#pop#2024-01-15", "sk": "RANK#03"}).get(
+            "Item"
+        )
+        is None
+    )
+    assert dynamodb_table.get_item(Key={"pk": "TOP_SONGS#pop#2024-01-15", "sk": "RANK#02"})[
+        "Item"
+    ]

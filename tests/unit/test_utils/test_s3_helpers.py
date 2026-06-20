@@ -8,7 +8,9 @@ from moto import mock_aws
 from src.utils.s3_helpers import (
     copy_s3_object,
     delete_s3_object,
+    derive_archive_key,
     get_s3_client,
+    object_exists,
     read_csv_bytes,
 )
 
@@ -58,3 +60,16 @@ def test_delete_s3_object_removes_key(s3_client: boto3.client) -> None:
     with pytest.raises(ClientError) as exc:
         s3_client.head_object(Bucket=_BUCKET, Key="raw/streams/streams1.csv")
     assert exc.value.response["Error"]["Code"] in {"404", "NoSuchKey"}
+
+
+def test_object_exists_returns_true_when_key_present(s3_client: boto3.client) -> None:
+    s3_client.put_object(Bucket=_BUCKET, Key="reference/songs/songs.csv", Body=b"x")
+    assert object_exists(s3_client, _BUCKET, "reference/songs/songs.csv") is True
+
+
+def test_object_exists_returns_false_when_key_missing(s3_client: boto3.client) -> None:
+    assert object_exists(s3_client, _BUCKET, "reference/songs/songs.csv") is False
+
+
+def test_derive_archive_key_maps_raw_prefix_to_archive() -> None:
+    assert derive_archive_key("raw/streams/streams1.csv") == "archive/streams/streams1.csv"
