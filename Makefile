@@ -16,5 +16,5 @@ init: ## terraform init (set TF_STATE_BUCKET and AWS_REGION)
 apply: ## terraform apply using terraform.tfvars
 	cd $(TF_DIR) && terraform apply -var-file=terraform.tfvars
 
-upload: ## Upload streams CSV — make upload FILE=streams1.csv
+upload: ## Upload streams CSV — make upload FILE=streams1.csv (uses terraform.tfvars bucket_name)
 	bash scripts/upload_sample_data.sh $(FILE)
