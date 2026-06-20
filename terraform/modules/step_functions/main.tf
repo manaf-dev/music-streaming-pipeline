@@ -94,7 +94,7 @@ resource "aws_cloudwatch_event_rule" "raw_upload" {
         name = [var.bucket_name]
       }
       object = {
-        key = [{ prefix = "raw/streams/", suffix = ".csv" }]
+        key = [{ prefix = "raw/streams/" }]
       }
     }
   })

@@ -97,6 +97,14 @@
           "Next": "NotifyFailure"
         }
       ],
+      "Next": "PrepareArchive"
+    },
+    "PrepareArchive": {
+      "Type": "Pass",
+      "Parameters": {
+        "archive_key.$": "States.Format('archive/{}', States.ArrayGetItem(States.StringSplit($.detail.object.key, 'raw/'), 1))"
+      },
+      "ResultPath": "$.archive",
       "Next": "ArchiveCopyToS3"
     },
     "ArchiveCopyToS3": {
@@ -106,7 +114,7 @@
       "Parameters": {
         "Bucket.$": "$.detail.bucket.name",
         "CopySource.$": "States.Format('/{}/{}', $.detail.bucket.name, $.detail.object.key)",
-        "Key.$": "States.StringReplace($.detail.object.key, 'raw/', 'archive/')"
+        "Key.$": "$.archive.archive_key"
       },
       "ResultPath": "$.archive_copy_result",
       "Retry": [

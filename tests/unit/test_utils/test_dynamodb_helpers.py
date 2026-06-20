@@ -150,20 +150,14 @@ def test_recompute_top_songs_deletes_stale_rank_slots(dynamodb_table: boto3.reso
         ],
     )
     recompute_top_songs(dynamodb_table, genre="pop", date="2024-01-15")
-    assert dynamodb_table.get_item(Key={"pk": "TOP_SONGS#pop#2024-01-15", "sk": "RANK#03"})[
-        "Item"
-    ]
+    assert dynamodb_table.get_item(Key={"pk": "TOP_SONGS#pop#2024-01-15", "sk": "RANK#03"})["Item"]
 
     # Drop t3 from partials and recompute — only two tracks remain.
     dynamodb_table.delete_item(Key={"pk": pk, "sk": "EXEC#e1#TRACK#t3"})
     recompute_top_songs(dynamodb_table, genre="pop", date="2024-01-15")
 
     assert (
-        dynamodb_table.get_item(Key={"pk": "TOP_SONGS#pop#2024-01-15", "sk": "RANK#03"}).get(
-            "Item"
-        )
+        dynamodb_table.get_item(Key={"pk": "TOP_SONGS#pop#2024-01-15", "sk": "RANK#03"}).get("Item")
         is None
     )
-    assert dynamodb_table.get_item(Key={"pk": "TOP_SONGS#pop#2024-01-15", "sk": "RANK#02"})[
-        "Item"
-    ]
+    assert dynamodb_table.get_item(Key={"pk": "TOP_SONGS#pop#2024-01-15", "sk": "RANK#02"})["Item"]
