@@ -205,6 +205,19 @@ aws dynamodb get-item \
 TABLE_NAME=music-streaming-kpis ./scripts/query_dynamodb.sh 2024-01-15
 ```
 
+## KPI dashboard (Streamlit)
+
+Local dashboard for the three served KPI views (top genres, genre metrics, top songs):
+
+```bash
+uv sync
+make dashboard
+```
+
+Uses your local AWS credentials (`AWS_PROFILE` or default). SSO/`aws login` profiles need `awscrt` (included in dev deps) — if the session expired, run `aws login` and refresh the browser.
+
+Pick the listen date in the sidebar (UTC). Defaults: table `music-streaming-kpis`, region `eu-central-1` — override with `TABLE_NAME` / `AWS_REGION`.
+
 ## Testing
 
 CI runs ruff, mypy, pytest, and `terraform validate` on pull requests and deploys.

@@ -18,3 +18,6 @@ apply: ## terraform apply using terraform.tfvars
 
 upload: ## Upload streams CSV — make upload FILE=streams1.csv (uses terraform.tfvars bucket_name)
 	bash scripts/upload_sample_data.sh $(FILE)
+
+dashboard: ## Streamlit KPI dashboard — set AWS_PROFILE and TABLE_NAME as needed
+	uv run streamlit run src/dashboard/app.py

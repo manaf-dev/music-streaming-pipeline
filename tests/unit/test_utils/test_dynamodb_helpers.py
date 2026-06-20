@@ -109,11 +109,20 @@ def test_batch_write_with_duplicate_pkeys_in_same_batch_keeps_last_value(
     assert response["Item"]["listen_count"] == 2
 
 
-def test_expires_at_for_date_is_ninety_days_after_kpi_day() -> None:
+def test_expires_at_for_date_keeps_old_kpi_days_alive_from_ingest() -> None:
     from datetime import datetime, timedelta, timezone
 
     ttl = expires_at_for_date("2024-01-15")
-    expected = datetime(2024, 1, 15, tzinfo=timezone.utc) + timedelta(days=90)  # noqa: UP017
+    minimum = datetime.now(tz=timezone.utc) + timedelta(days=90)  # noqa: UP017
+    assert ttl >= int(minimum.timestamp())
+
+
+def test_expires_at_for_date_uses_kpi_day_when_future() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    future = (datetime.now(tz=timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")  # noqa: UP017
+    ttl = expires_at_for_date(future)
+    expected = datetime.strptime(future, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=90)  # noqa: UP017
     assert ttl == int(expected.timestamp())
 
 

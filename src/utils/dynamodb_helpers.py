@@ -59,10 +59,17 @@ def sanitize_for_dynamodb(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def expires_at_for_date(date_str: str, *, retention_days: int = TTL_RETENTION_DAYS) -> int:
-    """Return a Unix epoch TTL value ``retention_days`` after the KPI date (UTC)."""
+    """Return Unix epoch TTL at least ``retention_days`` after ingest (UTC).
+
+    Uses the later of (KPI date + retention) and (now + retention) so backfilled
+    historical listen dates are not deleted immediately when their KPI day is
+    already far in the past.
+    """
     # timezone.utc — Glue Python Shell 3.9 has no datetime.UTC (3.11+).
     kpi_day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)  # noqa: UP017
-    expire_at = kpi_day + timedelta(days=retention_days)
+    expire_from_kpi = kpi_day + timedelta(days=retention_days)
+    expire_from_now = datetime.now(tz=timezone.utc) + timedelta(days=retention_days)  # noqa: UP017
+    expire_at = max(expire_from_kpi, expire_from_now)
     return int(expire_at.timestamp())
 
 

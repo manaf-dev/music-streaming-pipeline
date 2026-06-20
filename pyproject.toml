@@ -27,6 +27,8 @@ dev = [
     "pytest-cov>=5,<7",
     "moto[all]>=5,<6",
     "pandas-stubs>=2",
+    "streamlit>=1.32,<2",
+    "awscrt>=0.19,<1",  # required for AWS SSO / aws login profiles (botocore login provider)
 ]
 
 [tool.uv]
@@ -69,6 +71,7 @@ ignore = [
 "tests/**/*.py" = ["D"]            # tests don't need pydocstyle
 "**/__init__.py" = ["D104"]        # package __init__ may be empty
 "src/glue_jobs/*.py" = ["E402"]    # Glue jobs may need sys.path manipulation before imports
+"src/dashboard/*.py" = ["D100", "D103"]  # Streamlit entry script
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -101,6 +104,8 @@ module = [
     "awswrangler.*",
     "moto.*",
     "awsglue.*",
+    "streamlit.*",
+    "altair.*",
 ]
 ignore_missing_imports = true
 
@@ -126,7 +131,7 @@ markers = [
 [tool.coverage.run]
 source = ["src"]
 branch = true
-omit = ["src/step_functions/*"]  # ASL JSON has no Python coverage
+omit = ["src/step_functions/*", "src/dashboard/*"]  # ASL JSON; Streamlit UI (manual)
 
 [tool.coverage.report]
 fail_under = 80
